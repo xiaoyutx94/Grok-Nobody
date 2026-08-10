@@ -994,7 +994,7 @@ func (e *RegisterEngine) run(parent context.Context, cfg Config, in StartInput, 
                 },
         }
 
-        e.appendLog(fmt.Sprintf("UmbraForge batch start id=%s count=%d concurrency=%d captcha=%s email=%s", uuid.NewString()[:8], in.Count, in.Concurrency, in.CaptchaProvider, emailMode))
+        e.appendLog(fmt.Sprintf("Grok-Nobody batch start id=%s count=%d concurrency=%d captcha=%s email=%s", uuid.NewString()[:8], in.Count, in.Concurrency, in.CaptchaProvider, emailMode))
         prog := grokregister.RunBatch(opts, cancel)
         grokregister.StopEzTokenWarmup("批量注册结束：停止预热并释放槽位")
         e.mu.Lock()

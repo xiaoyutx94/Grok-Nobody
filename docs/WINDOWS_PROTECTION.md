@@ -2,9 +2,9 @@
 
 ## What this build protects
 
-The protected Windows pipeline (`scripts/build-windows-protected.sh`) uses layered, independently verifiable controls:
+The protected Windows pipeline uses layered, independently verifiable controls:
 
-1. **Go code obfuscation** — UmbraForge, VeloraTurn and Auralith are built with Garble using a fresh random seed, `-trimpath`, disabled VCS metadata, stripped symbols/debug data and an empty Go build ID.
+1. **Go code obfuscation** — Grok-Nobody, VeloraTurn and Auralith are built with Garble using a fresh random seed, `-trimpath`, disabled VCS metadata, stripped symbols/debug data and an empty Go build ID.
 2. **Encrypted plugin delivery** — the Windows installer contains only the protected executable and `plugins.ufp`. The latter is a ZIP payload encrypted as one authenticated envelope with **AES-256-GCM**. Plugin names, source paths, Python source, patch JavaScript and plugin binaries are ciphertext in the installed program directory.
 3. **Bundle integrity** — every encrypted envelope is signed with **Ed25519**. The private key remains in the narrowly scoped `ufpack` build process; only the verification key is compiled into the paired executable. Verification happens before decryption. A stable CI-held Ed25519 key is mandatory in production mode; an ephemeral local key proves pairing, not publisher identity.
 4. **Per-build key separation** — every build receives a new random 256-bit content key unless the release operator explicitly provides one. The executable stores two independent XOR shares, not a printable key string, and Garble renames their surrounding code.

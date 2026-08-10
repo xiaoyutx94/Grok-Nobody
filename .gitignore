@@ -1,21 +1,21 @@
 # ===== macOS =====
 .DS_Store
 
-# ===== 本机工具/构建状态 =====
+# ===== Local tooling / build state =====
 .build/
 .hermes/
 
-# ===== 打码核心引擎(专有,不随仓库开源)=====
+# ===== Captcha core engines (proprietary, not shipped with the OSS repo) =====
 plugins/auralith/
 plugins/veloraturn/
 plugins/ezsolver/
 
-# ===== 插件二进制面板 / 运行残留 =====
+# ===== Plugin binaries / runtime leftovers =====
 plugins/icloud-panel/
 plugins/.runlogs/
 plugins/.runtime/
 
-# ===== 二进制文件 =====
+# ===== Binary files =====
 *.exe
 *.icns
 *.ico
@@ -25,16 +25,21 @@ plugins/.runtime/
 *.so
 *.bin
 
-# ===== 构建产物(go:embed 依赖 frontend/dist → backend/internal/web/dist)=====
+# ===== Build artifacts (go:embed needs frontend/dist -> backend/internal/web/dist) =====
 frontend/node_modules/
 frontend/dist/
 backend/internal/web/dist/
 bin/
 dist/
 
-# ===== 编译打包文件 =====
+# ===== Build/packaging files (distributed privately) =====
 packaging/
 scripts/
 
-# ===== 本地运维脚本(不随仓库发布)=====
+# ===== Internal review/analysis docs (not shipped) =====
+docs/GAP_ANALYSIS.md
+docs/REVIEW_0.2.1.md
+docs/REVIEW_EDU_FIX.md
+
+# ===== Local ops script (not shipped) =====
 /push-to-github.sh

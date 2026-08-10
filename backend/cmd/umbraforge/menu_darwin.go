@@ -20,8 +20,8 @@ static void UmbraInstallMainMenu(void) {
     // App menu
     NSMenuItem *appItem = [[NSMenuItem alloc] init];
     [menubar addItem:appItem];
-    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"UmbraForge"];
-    NSString *appName = @"UmbraForge";
+    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Grok-Nobody"];
+    NSString *appName = @"Grok-Nobody";
     [appMenu addItemWithTitle:[NSString stringWithFormat:@"About %@", appName]
                        action:@selector(orderFrontStandardAboutPanel:)
                 keyEquivalent:@""];

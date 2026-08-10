@@ -48,7 +48,7 @@ func (a *API) Router() *gin.Engine {
 	})
 
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "app": "UmbraForge", "product": "影铸"})
+		c.JSON(200, gin.H{"status": "ok", "app": "Grok-Nobody"})
 	})
 
 	admin := r.Group("/api/v1/admin")

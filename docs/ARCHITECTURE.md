@@ -1,4 +1,4 @@
-# UmbraForge Architecture
+# Grok-Nobody Architecture
 
 ```
 Vue UI  --HTTP-->  Go API (:17890)
@@ -8,7 +8,8 @@ Vue UI  --HTTP-->  Go API (:17890)
                      '- store.JSONStore      -> settings.json
 ```
 
-Packages copied from Sub2API (import rewritten):
+Packages derived from the Sub2API project (import paths rewritten):
+
 - internal/pkg/grokregister
 - internal/pkg/cfemail
 - internal/pkg/captcha

@@ -71,7 +71,7 @@ func main() {
 		log.Fatal(err)
 	}
 	base := fmt.Sprintf("http://%s", ln.Addr().String())
-	log.Printf("UmbraForge %s", base)
+	log.Printf("Grok-Nobody %s", base)
 	log.Printf("data: %s", dataDir)
 	log.Printf("plugins: %s", projectRoot)
 
