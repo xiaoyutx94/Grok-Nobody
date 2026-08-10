@@ -32,12 +32,17 @@ func (g *GatewayService) routes() *gin.Engine {
 
 // resolveTarget 按 Key 分组解析：分组 → 服务 → 可用账号。
 // 调用方负责 picker.Release。
+// groupID 为 AllAccountsGroupID 时跳过分组查询（全账号池 + 默认 grok 反代服务）。
 func (g *GatewayService) resolveTarget(c *gin.Context) (GatewayGroup, UpstreamService, AccountEntry, error) {
 	groupID := c.GetString("gw_group_id")
 	ctx := c.Request.Context()
-	group, err := g.store.GetGroup(ctx, groupID)
-	if err != nil {
-		return GatewayGroup{}, UpstreamService{}, AccountEntry{}, err
+	group := GatewayGroup{ID: groupID, ServiceID: DefaultServiceID}
+	if groupID != AllAccountsGroupID {
+		var err error
+		group, err = g.store.GetGroup(ctx, groupID)
+		if err != nil {
+			return GatewayGroup{}, UpstreamService{}, AccountEntry{}, err
+		}
 	}
 	svc, err := g.store.GetService(ctx, group.ServiceID)
 	if err != nil {

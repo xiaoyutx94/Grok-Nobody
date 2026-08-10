@@ -278,6 +278,21 @@ func (a *API) registerGatewayRoutes(admin *gin.RouterGroup) {
 		c.JSON(http.StatusOK, gin.H{"moved": moved})
 	})
 
+	// ---------- 内部对话 ----------
+	// 对话功能（复刻官方 grok CLI）：全账号池、内部 key、SSE 流式
+	gw.POST("/chat", func(c *gin.Context) {
+		a.Gateway.HandleChat(c)
+	})
+	// 内部对话 key（本机内部使用；幂等由 EnsureDefaults 保证）
+	gw.GET("/internal-key", func(c *gin.Context) {
+		key, err := a.Gateway.Store().InternalKey(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"key": key})
+	})
+
 	// ---------- 连通性测试 ----------
 	gw.POST("/test", func(c *gin.Context) {
 		var body struct {

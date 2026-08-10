@@ -79,7 +79,50 @@ func (s *GatewayStore) ensureDefaults(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// 内部对话 key（全账号池，无分组约束）：幂等创建
+	keys, err := s.listKeys(ctx)
+	if err != nil {
+		return err
+	}
+	hasInternal := false
+	for _, k := range keys {
+		if k.GroupID == AllAccountsGroupID {
+			hasInternal = true
+			break
+		}
+	}
+	if !hasInternal {
+		internal := GatewayAPIKey{
+			ID:        uuid.NewString(),
+			Key:       "sk-internal-" + randomHex(16),
+			Name:      "内部对话",
+			GroupID:   AllAccountsGroupID,
+			Status:    KeyStatusActive,
+			CreatedAt: now,
+		}
+		keys = append(keys, internal)
+		if err := s.save(ctx, KeyKeys, keys); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// InternalKey 返回内部对话 key（完整值；本机内部使用非秘密）。
+func (s *GatewayStore) InternalKey(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys, err := s.listKeys(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, k := range keys {
+		if k.GroupID == AllAccountsGroupID {
+			return k.Key, nil
+		}
+	}
+	return "", fmt.Errorf("内部 key 未初始化")
 }
 
 // EnsureDefaults 幂等初始化入口（Start 时调用）。

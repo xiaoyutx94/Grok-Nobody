@@ -64,6 +64,10 @@ const (
 
 	KeyStatusActive   = "active"
 	KeyStatusDisabled = "disabled"
+
+	// AllAccountsGroupID 特殊分组：key 绑定该值时网关从全部账号池路由
+	// （含未分组账号），不做分组约束——内部对话功能的默认行为。
+	AllAccountsGroupID = "__all__"
 )
 
 // DefaultGrokBaseURL grok 官方 CLI 聊天网关（免费 OAuth 账号的唯一可用上游：

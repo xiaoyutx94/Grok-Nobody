@@ -14,6 +14,7 @@ import GatewayView from './views/GatewayView.vue'
 import GatewayGroupsView from './views/GatewayGroupsView.vue'
 import GatewayKeysView from './views/GatewayKeysView.vue'
 import GatewayServicesView from './views/GatewayServicesView.vue'
+import ChatView from './views/ChatView.vue'
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -21,6 +22,7 @@ export const router = createRouter({
     { path: '/', component: HomeView },
     { path: '/register', component: RegisterView },
     { path: '/accounts', component: AccountsView },
+    { path: '/chat', component: ChatView },
     { path: '/proxy-pool', component: ProxyPoolView },
     { path: '/warp', component: WarpView },
     { path: '/settings', component: SettingsView },

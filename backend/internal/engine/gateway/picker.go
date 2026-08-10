@@ -52,6 +52,7 @@ type AccountEntry struct {
 }
 
 // Pick 从分组中选择一个可用账号；无可选账号返回错误。
+// groupID 为 AllAccountsGroupID（__all__）时从全部账号池选择（不做分组约束）。
 // proxies 为分组绑定的代理列表（空 = 直连），每次调用轮询取一个出口。
 func (p *AccountPicker) Pick(ctx context.Context, groupID string, proxies []string) (AccountEntry, error) {
 	list, err := p.accts.List(ctx)
@@ -61,10 +62,11 @@ func (p *AccountPicker) Pick(ctx context.Context, groupID string, proxies []stri
 
 	now := time.Now()
 	candidates := make([]engine.Account, 0, 4)
+	all := groupID == AllAccountsGroupID
 	p.mu.Lock()
 	for i := range list {
 		acc := list[i]
-		if acc.GroupID != groupID {
+		if !all && acc.GroupID != groupID {
 			continue
 		}
 		if strings.TrimSpace(acc.AccessToken) == "" {
