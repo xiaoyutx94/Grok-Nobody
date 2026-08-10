@@ -25,6 +25,13 @@ plugins/.runtime/
 *.so
 *.bin
 
+# ===== 构建产物(go:embed 依赖 frontend/dist → backend/internal/web/dist)=====
+frontend/node_modules/
+frontend/dist/
+backend/internal/web/dist/
+bin/
+dist/
+
 # ===== 编译打包文件 =====
 packaging/
 scripts/
