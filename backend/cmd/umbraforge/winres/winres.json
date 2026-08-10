@@ -1,0 +1,53 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": ["app.png"]
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "Grok-Nobody",
+          "version": "1.0.0.0"
+        },
+        "description": "Grok-Nobody 注册工作台",
+        "minimum-os": "vista",
+        "execution-level": "asInvoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "disable-theming": false,
+        "disable-window-filtering": false,
+        "high-resolution-scrolling-aware": false,
+        "ultra-high-resolution-scrolling-aware": false,
+        "long-path-aware": true,
+        "printer-driver-isolation": false,
+        "gdi-scaling": false,
+        "segment-heap": false,
+        "use-common-controls-v6": false
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "1.0.0.0",
+          "product_version": "1.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "Nobody2088",
+            "FileDescription": "Grok-Nobody - Grok 注册工作台",
+            "FileVersion": "1.0.0.0",
+            "InternalName": "Grok-Nobody",
+            "LegalCopyright": "© 2026 Nobody2088",
+            "OriginalFilename": "Grok-Nobody-windows-amd64.exe",
+            "ProductName": "Grok-Nobody",
+            "ProductVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  }
+}

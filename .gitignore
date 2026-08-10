@@ -1,0 +1,33 @@
+# ===== macOS =====
+.DS_Store
+
+# ===== 本机工具/构建状态 =====
+.build/
+.hermes/
+
+# ===== 打码核心引擎(专有,不随仓库开源)=====
+plugins/auralith/
+plugins/veloraturn/
+plugins/ezsolver/
+
+# ===== 插件二进制面板 / 运行残留 =====
+plugins/icloud-panel/
+plugins/.runlogs/
+plugins/.runtime/
+
+# ===== 二进制文件 =====
+*.exe
+*.icns
+*.ico
+*.png
+*.dll
+*.dylib
+*.so
+*.bin
+
+# ===== 编译打包文件 =====
+packaging/
+scripts/
+
+# ===== 本地运维脚本(不随仓库发布)=====
+/push-to-github.sh
