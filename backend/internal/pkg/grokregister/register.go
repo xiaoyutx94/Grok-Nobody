@@ -871,14 +871,29 @@ func (r *GrokRegistrar) Run(captcha CaptchaOptions) map[string]interface{} {
 	var captchaCh chan captchaJob
 	if provider != CaptchaProviderNone {
 		captchaCh = make(chan captchaJob, 1)
-		Logf("[Grok] Step 6∩2-5: 并行启动 Turnstile (provider=%s) 覆盖发码/等码/验码...", provider)
-		go func() {
-			t0 := time.Now()
-			solveOpts := captcha
-			solveOpts.Provider = provider
-			res, cerr := SolveTurnstileWithOptions(solveOpts, r.cancel)
-			captchaCh <- captchaJob{res: res, err: cerr, sec: time.Since(t0).Seconds()}
-		}()
+		prefetched := false
+		// 流水线预取:命中则直接用预取结果(通常已完成或即将完成),
+		// 打码 8s 与上一轮的等码/提交窗口重叠,单任务 15s → ~10s。
+		if captcha.Prefetch != nil {
+			if pch := captcha.Prefetch.Take(captcha.WorkerID, captcha.ProxyURL); pch != nil {
+				prefetched = true
+				Logf("[Grok] Step 6∩2-5: 命中流水线预取打码 (worker=%d, solver 已在跑)", captcha.WorkerID)
+				go func() {
+					pr := <-pch
+					captchaCh <- captchaJob{res: pr.res, err: pr.err, sec: pr.sec}
+				}()
+			}
+		}
+		if !prefetched {
+			Logf("[Grok] Step 6∩2-5: 并行启动 Turnstile (provider=%s) 覆盖发码/等码/验码...", provider)
+			go func() {
+				t0 := time.Now()
+				solveOpts := captcha
+				solveOpts.Provider = provider
+				res, cerr := SolveTurnstileWithOptions(solveOpts, r.cancel)
+				captchaCh <- captchaJob{res: res, err: cerr, sec: time.Since(t0).Seconds()}
+			}()
+		}
 	} else {
 		Logf("[Grok] Step 6: 打码关闭 (none)，直接提交空 turnstileToken")
 	}
@@ -1028,6 +1043,11 @@ func (r *GrokRegistrar) Run(captcha CaptchaOptions) map[string]interface{} {
 			preToken = job.res.Token
 			preRes = job.res
 			Logf("[Grok] 并行 CAPTCHA OK via %s len=%d (solver=%.1fs)", job.res.Provider, len(preToken), job.sec)
+		}
+		// 打码结果落定 → 通知外层触发下一轮预取(流水线模式)。
+		// 无论成败都触发:失败时下一轮 Take 会拿到 err,走既有重试。
+		if captcha.OnCaptchaDone != nil {
+			captcha.OnCaptchaDone(captcha.WorkerID, captcha.ProxyURL)
 		}
 	}
 

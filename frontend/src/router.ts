@@ -10,6 +10,10 @@ import PluginsView from './views/PluginsView.vue'
 import WarpView from './views/WarpView.vue'
 import DockerView from './views/DockerView.vue'
 import UsageGuideView from './views/UsageGuideView.vue'
+import GatewayView from './views/GatewayView.vue'
+import GatewayGroupsView from './views/GatewayGroupsView.vue'
+import GatewayKeysView from './views/GatewayKeysView.vue'
+import GatewayServicesView from './views/GatewayServicesView.vue'
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -24,6 +28,10 @@ export const router = createRouter({
     { path: '/icloud', component: IcloudView },
     { path: '/plugins', component: PluginsView },
     { path: '/docker', component: DockerView },
-    { path: '/guide', component: UsageGuideView }
+    { path: '/guide', component: UsageGuideView },
+    { path: '/gateway', component: GatewayView },
+    { path: '/gateway/groups', component: GatewayGroupsView },
+    { path: '/gateway/keys', component: GatewayKeysView },
+    { path: '/gateway/services', component: GatewayServicesView }
   ]
 })

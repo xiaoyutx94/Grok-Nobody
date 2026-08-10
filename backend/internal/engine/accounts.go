@@ -43,7 +43,10 @@ type Account struct {
         Proxy        string `json:"proxy,omitempty"`
         Status       string `json:"status"`
         Imported     bool   `json:"imported"`
-        Note         string `json:"note,omitempty"`
+        // GroupID/GroupName 网关分组归属（空 = 未分组，不参与网关账号路由）。
+        GroupID   string `json:"group_id,omitempty"`
+        GroupName string `json:"group_name,omitempty"`
+        Note      string `json:"note,omitempty"`
         CreatedAt    string `json:"created_at"`
         UpdatedAt    string `json:"updated_at"`
         Raw          map[string]any `json:"raw,omitempty"`
@@ -177,6 +180,8 @@ func (s *AccountService) UpsertFromResult(ctx context.Context, result map[string
                 OS:           strFrom(result, "os"),
                 Proxy:        strFrom(result, "proxy", "registration_proxy"),
                 Status:       strFrom(result, "status"),
+                GroupID:      strFrom(result, "group_id"),
+                GroupName:    strFrom(result, "group_name"),
                 CreatedAt:    now,
                 UpdatedAt:    now,
                 Raw:          result,
@@ -1084,6 +1089,8 @@ type AccountPatch struct {
 	Note     *string `json:"note"`
 	Status   *string `json:"status"`
 	Imported *bool   `json:"imported"`
+	GroupID  *string `json:"group_id"`
+	GroupName *string `json:"group_name"`
 }
 
 // Update 更新单账号字段（仅传入的字段生效）。
@@ -1134,11 +1141,59 @@ func (s *AccountService) Update(ctx context.Context, id string, patch AccountPat
 	if patch.Imported != nil {
 		acc.Imported = *patch.Imported
 	}
+	if patch.GroupID != nil {
+		acc.GroupID = strings.TrimSpace(*patch.GroupID)
+	}
+	if patch.GroupName != nil {
+		acc.GroupName = strings.TrimSpace(*patch.GroupName)
+	}
 	acc.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.save(ctx, list); err != nil {
 		return Account{}, err
 	}
 	return *acc, nil
+}
+
+// MoveAccounts 批量移动账号到目标分组（groupID/groupName 均为空 = 清空分组）。
+// 返回实际移动的账号数。不存在的 id 静默跳过。
+func (s *AccountService) MoveAccounts(ctx context.Context, ids []string, groupID, groupName string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load(ctx)
+	if err != nil {
+		return 0, err
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	moved := 0
+	changed := false
+	for i := range list {
+		if !want[list[i].ID] {
+			continue
+		}
+		groupID = strings.TrimSpace(groupID)
+		groupName = strings.TrimSpace(groupName)
+		if list[i].GroupID == groupID && list[i].GroupName == groupName {
+			continue
+		}
+		list[i].GroupID = groupID
+		list[i].GroupName = groupName
+		list[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		moved++
+		changed = true
+	}
+	if !changed {
+		return 0, nil
+	}
+	if err := s.save(ctx, list); err != nil {
+		return 0, err
+	}
+	return moved, nil
 }
 
 // RefreshOAuth 强制重新用 SSO 换一次 OAuth 凭证（已有 access_token 也覆盖）。

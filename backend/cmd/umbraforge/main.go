@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/umbraforge/desktop/internal/engine"
+	enginegateway "github.com/umbraforge/desktop/internal/engine/gateway"
 	"github.com/umbraforge/desktop/internal/plugins"
 	"github.com/umbraforge/desktop/internal/server"
 	"github.com/umbraforge/desktop/internal/store"
@@ -54,12 +55,14 @@ func main() {
 	accounts := engine.NewAccountService(st)
 	warp := engine.NewWarpService(st, accounts)
 	pluginCenter := plugins.NewCenterWithState(projectRoot, filepath.Join(dataDir, "plugin-state"))
+	gw := enginegateway.NewGatewayService(st, accounts)
 	api := &server.API{
 		Engine:   engine.NewRegisterEngine(st, accounts),
 		Edu:      engine.NewEduService(st),
 		Plugins:  pluginCenter,
 		Accounts: accounts,
 		Warp:     warp,
+		Gateway:  gw,
 		Static:   sub,
 	}
 	r := api.Router()
@@ -87,6 +90,13 @@ func main() {
 		api.Plugins.AutoStartLocalBundled()
 	}()
 
+	// 启动 Grok 反代网关（默认 127.0.0.1:18789，失败仅告警不退出）
+	if addr, running, gerr := gw.Start(context.Background()); gerr != nil {
+		log.Printf("[gateway] 启动失败: %v", gerr)
+	} else if running {
+		log.Printf("[gateway] API 网关已就绪: http://%s", addr)
+	}
+
 	srv := &http.Server{Handler: r}
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -108,6 +118,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+	gw.Stop()
 }
 
 func resolveRoot(root string) string {

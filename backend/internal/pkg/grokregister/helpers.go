@@ -295,6 +295,17 @@ func shouldRetryJobWithNewProxy(errMsg string) bool {
 	keys := []string{
 		"cloudflare",
 		"http 403",
+		// 中文错误串里的 403（如「发送验证码返回 403: ...not available in your
+		// region」）此前只有 "http 403" 一条窄匹配，完全命中不到 → 地区封锁
+		// 的出口不换代理就直接把账号判失败。403/451 全形态都要换出口重试。
+		"返回 403",
+		"状态 403",
+		"403 forbidden",
+		"not available in your region",
+		"unavailable in your region",
+		"blocked in your country",
+		"http 451",
+		"返回 451",
 		"更换住宅代理",
 		"更换代理",
 		"访问注册页面失败",
@@ -362,6 +373,51 @@ func isProxyIrrelevantFailure(errMsg string) bool {
 	}
 	for _, k := range keys {
 		if strings.Contains(e, k) || strings.Contains(errMsg, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRegionBlockedFailure 判断失败是否为「出口所在地区被 x.ai 封锁」。
+// 形态: 发送验证码返回 403 + "This service is not available in your region"。
+// 这不是账号问题也不是打码问题,而是该出口 IP 的地理位置不被接受 ——
+// 必须换出口重试,并把该代理计入失败以便冷却,否则同一个被封出口
+// 会被反复选中,每次都在「发送验证码」这一步白烧一个邮箱。
+func isRegionBlockedFailure(errMsg string) bool {
+	e := strings.ToLower(strings.TrimSpace(errMsg))
+	if e == "" {
+		return false
+	}
+	for _, k := range []string{
+		"not available in your region",
+		"unavailable in your region",
+		"blocked in your country",
+		"not available in your country",
+	} {
+		if strings.Contains(e, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// isProxyDNSFailure 判断失败是否为「代理出口 DNS 解析失败」。
+// 典型形态: auralith HTTP 400 {"error":"target host could not be safely resolved"}。
+// 打码/注册请求经代理出口解析业务域名(x.ai 系)失败 = 代理 DNS 坏的确定性信号,
+// 好代理绝不会解析不了业务域名 —— 这类失败不能按「打码无关」豁免,
+// 必须计入代理失败并走淘汰链路,否则坏 DNS 代理会被无限复用。
+func isProxyDNSFailure(errMsg string) bool {
+	e := strings.ToLower(strings.TrimSpace(errMsg))
+	for _, k := range []string{
+		"could not be safely resolved",
+		"no such host",
+		"server misbehaving",
+		"temporary failure in name resolution",
+		"nodename nor servname provided",
+		"lookup ",
+	} {
+		if strings.Contains(e, k) {
 			return true
 		}
 	}

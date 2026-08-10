@@ -148,6 +148,26 @@ All parameters can be filled on the page or reused as batch task configuration.
 - **One-click captcha container deploy** — creates the all-in-one container (ports 8192/8193/8194) with Chromium/Xvfb installed inside; ~3–8 minutes the first time, near-instant reuse once the image is cached.
 - **Engine version pinning** — image versions (v7+) pin the engine binaries; upgrading engines rebuilds the image automatically.
 
+### API 网关（Grok 反代）
+
+把账号池变成 OpenAI / Claude 双协议 API，本机即可用 Claude Code / OpenAI SDK / curl 调用：
+
+- **网关总览** — 开关与端口（默认 `127.0.0.1:18789`，仅本机可访问）、运行统计、三协议 curl 示例一键复制
+- **分组管理** — 账号池分组：绑定上游服务 + **从代理池选择转发出口代理**（空 = 直连）；实时显示组内可用/冷却/封禁账号数
+- **API 密钥** — 为分组生成 `sk-xxx` 密钥（crypto 随机，仅创建时显示一次），客户端 Bearer 认证
+- **服务管理** — 上游渠道：内置「Grok 官方反代」（`cli-chat-proxy.grok.com/v1`，不可删），可添加自定义 OpenAI / Anthropic 兼容上游
+- **账号分组** — 账号管理页新增「分组」列与按组筛选，批量操作支持「移动到分组」（A 组 → B 组）；注册页自动入库可选落组
+- **协议** — `/v1/responses`、`/v1/chat/completions`、`/v1/messages`（流式 + 非流式）、`/v1/models`
+- **防封** — 转发使用 grok CLI 官方指纹（`x-xai-token-auth` + `x-grok-client-version` 动态跟随官方 + UA），单账号并发 ≤ 2，429 冷却 30 分钟，403 自动封禁该账号；多账号同组建议绑定代理池分散出口 IP
+
+```bash
+curl http://127.0.0.1:18789/v1/messages \
+  -H "Authorization: Bearer sk-xxx" \
+  -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"grok-4.5","max_tokens":256,"messages":[{"role":"user","content":"ping"}]}'
+```
+
 ### Settings / captcha channel
 
 - **Captcha provider** — default engine (ezsolver / veloraturn / auralith / third-party); overridable on the register page.

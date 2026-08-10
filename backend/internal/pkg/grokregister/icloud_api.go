@@ -43,8 +43,8 @@ func NewICloudAPIEmail(baseURL, apiKey, project string) *iCloudAPIEmail {
 	}
 }
 
-func (e *iCloudAPIEmail) SetCancel(ch *SafeCancel)   { e.cancel = ch }
-func (e *iCloudAPIEmail) SetLogPrefix(p string)      { e.logPrefix = p }
+func (e *iCloudAPIEmail) SetCancel(ch *SafeCancel)             { e.cancel = ch }
+func (e *iCloudAPIEmail) SetLogPrefix(p string)                { e.logPrefix = p }
 func (e *iCloudAPIEmail) SetCodeExtractor(func(string) string) {}
 
 func (e *iCloudAPIEmail) Address() string { return e.email }

@@ -60,6 +60,12 @@ type CaptchaOptions struct {
 	EzSolverAPIKey string
 	AuralithURL    string
 	AuralithAPIKey string
+	// Prefetch 流水线预取器(worker 间隙提前打码)。nil = 关闭。
+	Prefetch *CaptchaPrefetch `json:"-"`
+	// WorkerID 当前 worker 编号(预取槽索引)。
+	WorkerID int `json:"-"`
+	// OnCaptchaDone 打码结果落定后回调(用于触发下一轮预取)。proxy 为本次打码所用代理。
+	OnCaptchaDone func(workerID int, proxy string) `json:"-"`
 }
 
 // EzSolverConfig is persisted under settings.captcha.ezsolver.

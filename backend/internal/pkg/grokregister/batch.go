@@ -603,7 +603,13 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 			return
 		}
 		InvalidateProxyCache(proxy)
-		if !VerifyProxyMidBatch(proxy, "[Grok] ") {
+		// 业务域名解析失败(DNS)是代理出口的确定性故障:
+		// 即使连通性验证(只测 IP 站)通过,打码/注册也必然失败,跳过豁免直接淘汰。
+		dnsDead := isProxyDNSFailure(errMsg)
+		if dnsDead {
+			Logf("[Grok] [代理淘汰] %s 业务域名解析失败(DNS), 跳过连通验证直接淘汰", MaskProxy(proxy))
+		}
+		if dnsDead || !VerifyProxyMidBatch(proxy, "[Grok] ") {
 			proxyMu.Lock()
 			newPool := make([]string, 0, len(proxyPool))
 			removed := false
@@ -795,10 +801,19 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 		return nil
 	}
 
+	// 流水线预取器:worker 打码完成后为下一任务预取 solve(默认开启,可配置关闭)。
+	var prefetch *CaptchaPrefetch
+	if opts.BatchConfig.PipelineMode != nil && *opts.BatchConfig.PipelineMode {
+		prefetch = NewCaptchaPrefetch()
+	}
+
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			if prefetch != nil {
+				defer prefetch.Clear(workerID)
+			}
 			if opts.BatchConfig.StaggerSec > 0 && workerID > 0 {
 				sleepWithCancel(time.Duration(opts.BatchConfig.StaggerSec*workerID)*time.Second, cancel)
 			}
@@ -917,6 +932,26 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 						lastProxy,
 						workerID,
 					)
+					// 流水线模式:注入预取器 + worker 编号 + 打码完成回调。
+					// 回调在打码结果落定后触发(任务还剩等码/提交 ~6.5s),
+					// 用当前粘性代理为下一任务提前 solve —— 8s 打码与等码/提交重叠。
+					cap.Prefetch = prefetch
+					cap.WorkerID = workerID
+					cap.OnCaptchaDone = func(wid int, usedProxy string) {
+						if prefetch == nil {
+							return
+						}
+						next := usedProxy
+						stickyMu.Lock()
+						if ss := stickyByWorker[wid]; ss != nil && ss.proxy != "" {
+							next = ss.proxy
+						}
+						stickyMu.Unlock()
+						if next == "" {
+							return
+						}
+						prefetch.Start(wid, next, cap, cancel)
+					}
 					cap.ProxyExplicit = true
 					if cap.UserAgent == "" {
 						cap.UserAgent = profile.UA
@@ -949,11 +984,18 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 				errMsgForProxy, _ := result["error"].(string)
 				durMs := time.Since(taskStart).Milliseconds()
 				ok := st == "success"
-				// cancelled / 打码侧失败不算代理挂；仅真实网络/CF/SOCKS 计 fail
+				// cancelled / 打码侧失败不算代理挂;仅真实网络/CF/SOCKS 计 fail。
+				// 例外:打码链路的 DNS 解析失败是代理出口故障,必须计 fail 走淘汰。
 				proxyTrack := st
-				if isUserCancelledStatus(st, errMsgForProxy) {
+				switch {
+				case isProxyDNSFailure(errMsgForProxy):
+					proxyTrack = "dns_fail"
+				case isRegionBlockedFailure(errMsgForProxy):
+					// 地区封锁:出口位置不被接受,计失败让它冷却/淘汰,别再被选中
+					proxyTrack = "region_blocked"
+				case isUserCancelledStatus(st, errMsgForProxy):
 					proxyTrack = "cancelled"
-				} else if !ok && isProxyIrrelevantFailure(errMsgForProxy) {
+				case !ok && isProxyIrrelevantFailure(errMsgForProxy):
 					proxyTrack = "skip"
 				}
 				trackProxyResult(lastProxy, proxyTrack, errMsgForProxy, durMs)

@@ -31,6 +31,11 @@ type BatchConfig struct {
 	WarpRotateEvery  int    `json:"warp_rotate_every"`
 	OTPPollMs        int    `json:"otp_poll_ms"`
 	HumanDelay       bool   `json:"human_delay"`
+	// PipelineMode 流水线模式(预取打码):worker 在「打码完成 → 下一任务打码点」
+	// 的窗口里提前为下一轮发起 solve,让最慢的 8s 打码与等码/提交(6.5s)重叠,
+	// 单任务 15s → ~10s,3 并发吞吐 ~12/分钟 → ~18/分钟。
+	// nil = 未设置 → 默认开启;false = 显式关闭。
+	PipelineMode *bool `json:"pipeline_mode"`
 }
 
 func DefaultBatchConfig() *BatchConfig {
@@ -45,5 +50,8 @@ func DefaultBatchConfig() *BatchConfig {
 		RateCapacity: 50, RateBase: 50, RateMin: 10,
 		StaggerSec: 0, WarpRotateMode: "none", WarpRotateEvery: 0,
 		OTPPollMs: 500, HumanDelay: false,
+		PipelineMode: boolPtr(true),
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

@@ -40,6 +40,13 @@ func looksLikeIP(s string) bool {
 	return len(s) >= 4 && len(s) <= 45
 }
 
+// proxyRequiredTargets 是打码/注册业务域名,必须可达才判定代理可用。
+// 只测 IP 查询站会放过「DNS 被污染」的代理:能开 cloudflare/ipify,
+// 但解析不了 x.ai 系域名 → 批量注册里打码全部失败。验证层必须先拦住。
+var proxyRequiredTargets = []string{
+	"https://x.ai",
+}
+
 // proxyCheckTargets 是出口检测目标（多协议多地域，任一成功即判定可用）。
 // 判定原则：通过代理成功完成一次 HTTP(S) 请求 = 可用；出口 IP 尽力提取，
 // 提取不到不判失败（避免内容被劫持/验证页导致误杀可用代理）。
@@ -84,6 +91,27 @@ func testProxyAlive(proxyURL string) (string, bool) {
 	// 总预算：目标并发尝试，任一成功即返回；全部失败按预算提前结束。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// 必测业务域名(打码/注册目标):任一失败 → 代理不可用。
+	// 注意:这类请求的失败本身就是 DNS 被污染的判定依据,
+	// 不能与可选目标「任一成功即可」混在一起。
+	for _, u := range proxyRequiredTargets {
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if rerr != nil {
+			return "", false
+		}
+		req.Header.Set("Accept", "text/plain, */*")
+		req.Header.Set("User-Agent", "sub2api-proxy-check/1")
+		resp, gerr := client.Do(req)
+		if gerr != nil {
+			return "", false
+		}
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+			return "", false
+		}
+	}
 
 	type probeResult struct {
 		ip string

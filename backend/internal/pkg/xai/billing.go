@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,12 +19,11 @@ const (
 	// CLI 网关会拒绝过旧版本（实测缺该头直接 426
 	// "Your Grok CLI version (none) is outdated"），版本落后于官方下限时
 	// 同样会被拒，所以这里必须跟着 sub2api 一起升。
+	//
+	// 注意：CLIClientVersion 只是基线常量；实际请求头应使用
+	// EffectiveCLIClientVersion()（cli_version.go 动态跟随 x.ai/cli/stable，
+	// 30min TTL + 失败回落基线）。
 	CLIClientVersion = "1.0.0"
-	// CLIUserAgent 见 CLIUserAgentString()：官方 grok-build（xai-org/grok-build，
-	// xai-grok-pager/client_identity.rs + xai-grok-sampler/client.rs）的 UA 是
-	// 单一产品格式 grok-shell/<version> (<os>; <arch>)，os/arch 取真实平台
-	// （macos/aarch64 映射），是服务端 UA 解析的 wire contract，不能拼接
-	// 多产品前缀，也不能硬编码平台。
 
 	BillingWeeklyPath  = "/billing?format=credits"
 	BillingMonthlyPath = "/billing"
@@ -33,31 +31,6 @@ const (
 	SuperGrokLimitCents      = 15_000  // $150.00
 	SuperGrokHeavyLimitCents = 150_000 // $1,500.00
 )
-
-// CLIUserAgentString 渲染官方 grok CLI 的 User-Agent。
-//
-// 与 xai-org/grok-build 对齐（xai-grok-sampler client.rs：
-// user_agent_string_for(OriginClientInfo{product: "grok-shell"})）：
-//
-//	grok-shell/<version> (<os>; <arch>)
-//
-// os 取 macos/windows/linux（与官方 PlatformInfo::current() 映射一致），
-// arch 的 arm64→aarch64 映射也是官方行为。版本与 CLIClientVersion 锁步，
-// 网关按该头解析客户端新旧，格式错误会被服务端 UA 解析器归类失败。
-func CLIUserAgentString() string {
-	osName := "linux"
-	switch runtime.GOOS {
-	case "darwin":
-		osName = "macos"
-	case "windows":
-		osName = "windows"
-	}
-	arch := runtime.GOARCH
-	if arch == "arm64" {
-		arch = "aarch64"
-	}
-	return "grok-shell/" + CLIClientVersion + " (" + osName + "; " + arch + ")"
-}
 
 // BillingPeriod describes the current weekly/monthly window.
 type BillingPeriod struct {
@@ -156,7 +129,7 @@ func ApplyCLIBillingHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(CLITokenAuthHeader, CLITokenAuthValue)
-	req.Header.Set(CLIClientVersionHeader, CLIClientVersion)
+	req.Header.Set(CLIClientVersionHeader, EffectiveCLIClientVersion())
 	req.Header.Set("User-Agent", CLIUserAgentString())
 }
 

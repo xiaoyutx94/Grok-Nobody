@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/umbraforge/desktop/internal/engine"
+	"github.com/umbraforge/desktop/internal/engine/gateway"
 	"github.com/umbraforge/desktop/internal/pkg/cfemail"
 	"github.com/umbraforge/desktop/internal/pkg/xai"
 	"github.com/umbraforge/desktop/internal/plugins"
@@ -29,6 +30,7 @@ type API struct {
 	Plugins  *plugins.Center
 	Accounts *engine.AccountService
 	Warp     *engine.WarpService
+	Gateway  *gateway.GatewayService
 	Static   fs.FS
 }
 
@@ -52,6 +54,8 @@ func (a *API) Router() *gin.Engine {
 	})
 
 	admin := r.Group("/api/v1/admin")
+
+	a.registerGatewayRoutes(admin)
 
 	// 关于弹窗的外链跳转：webview 不处理 target=_blank，由后端调系统浏览器。
 	// 白名单：仅放行本程序的官方仓库与 QQ 群。

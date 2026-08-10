@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import * as grok from '@/api/grok'
+import * as gw from '@/api/gateway'
 import { confirmBox } from '@/utils/confirm'
 import { copyWithToast, toast } from '@/utils/clipboard'
 import AccountTestModal from '@/components/AccountTestModal.vue'
@@ -24,6 +25,12 @@ const page = ref(1)
 const filter = ref<Filter>('all')
 const revealed = reactive<Record<string, boolean>>({})
 
+// 网关分组：筛选 + 批量移动
+const groups = ref<gw.GatewayGroup[]>([])
+const groupFilter = ref('')
+const showMove = ref(false)
+const moveTarget = ref('')
+
 const testTarget = ref<any | null>(null)
 const detailTarget = ref<any | null>(null)
 const menu = reactive<{ acc: any | null; pos: { top: number; left: number } | null }>({ acc: null, pos: null })
@@ -45,6 +52,7 @@ const filtered = computed(() => {
   else if (filter.value === 'pending') list = list.filter((a) => !a.imported)
   else if (filter.value === 'oauth') list = list.filter((a) => a.access_token)
   else if (filter.value === 'failed') list = list.filter((a) => a.last_test_status === 'fail')
+  if (groupFilter.value) list = list.filter((a) => a.group_id === groupFilter.value)
 
   const s = q.value.trim().toLowerCase()
   if (!s) return list
@@ -77,14 +85,43 @@ async function reload() {
   loading.value = true
   try {
     accounts.value = await grok.listAccounts()
-    // 丢掉已不存在账号的选中态，避免批量操作打到空 ID
+    // 丢弃已不存在账号的选中态，避免批量操作打到空 ID
     const live = new Set(accounts.value.map((a) => a.id))
     selected.value = selected.value.filter((id) => live.has(id))
     if (page.value > totalPages.value) page.value = totalPages.value
+    // 网关分组列表（筛选/移动用）
+    try {
+      const g = await gw.getGroups()
+      groups.value = g.groups
+    } catch { /* 网关不可用时分组功能静默降级 */ }
   } catch (e: any) {
     toast(e?.response?.data?.error || e.message || '加载失败', 'bad')
   } finally {
     loading.value = false
+  }
+}
+
+// 批量移动到网关分组（A 组 → B 组）
+async function doMove() {
+  if (!selected.value.length) return
+  if (!moveTarget.value) {
+    toast('请选择目标分组', 'bad')
+    return
+  }
+  const target = groups.value.find((g) => g.id === moveTarget.value)
+  try {
+    const r = await gw.moveAccounts({
+      ids: selected.value,
+      group_id: target?.id || '',
+      group_name: target?.name || ''
+    })
+    toast(`已移动 ${r.moved} 个账号到「${target?.name || '未分组'}」`)
+    selected.value = []
+    showMove.value = false
+    moveTarget.value = ''
+    await reload()
+  } catch (e: any) {
+    toast(e?.response?.data?.error || e.message || '移动失败', 'bad')
   }
 }
 
@@ -422,6 +459,10 @@ onMounted(reload)
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
+      <select v-if="groups.length" class="input group-filter" v-model="groupFilter" @change="page = 1" title="按网关分组筛选">
+        <option value="">全部分组</option>
+        <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+      </select>
       <div class="spacer" />
       <div class="row">
         <span class="note">导出</span>
@@ -480,6 +521,7 @@ onMounted(reload)
 
         <div class="spacer" />
         <template v-if="selected.length">
+          <button class="btn btn-secondary btn-sm" :disabled="importing" @click="showMove = true">移动到分组</button>
           <button class="btn btn-primary btn-sm" :disabled="importing" @click="doImport">
             {{ importing ? '入库转换中…' : '入库转换所选' }}
           </button>
@@ -487,6 +529,22 @@ onMounted(reload)
         </template>
       </div>
     </Transition>
+
+    <!-- 分组移动弹窗 -->
+    <div v-if="showMove" class="modal-mask" @click.self="showMove = false">
+      <div class="modal">
+        <h3>移动到分组</h3>
+        <p class="note">已选 <b>{{ selected.length }}</b> 个账号 → 目标分组（空 = 移出分组）</p>
+        <select class="input" v-model="moveTarget" style="width:100%; margin-top:8px">
+          <option value="">（移出分组 / 不参与网关）</option>
+          <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+        </select>
+        <div class="modal-actions">
+          <button class="btn btn-primary" @click="doMove">移动</button>
+          <button class="btn btn-ghost" @click="showMove = false">取消</button>
+        </div>
+      </div>
+    </div>
 
     <div class="table-wrap acct-table">
       <table>
@@ -497,6 +555,7 @@ onMounted(reload)
             <th class="col-pwd">密码</th>
             <th class="col-cred">凭证</th>
             <th class="col-state">状态</th>
+            <th class="col-group">分组</th>
             <th class="col-test">上次测试</th>
             <th class="col-proxy">代理</th>
             <th class="col-time">创建</th>
@@ -540,6 +599,11 @@ onMounted(reload)
               <span class="pill" :class="a.imported ? 'run' : ''">{{ a.imported ? '已入库' : '未入库' }}</span>
             </td>
 
+            <td class="col-group">
+              <span v-if="a.group_name" class="badge">{{ a.group_name }}</span>
+              <span v-else class="note">未分组</span>
+            </td>
+
             <td class="col-test">
               <div v-if="a.last_test_status" class="test-cell" :title="a.last_test_error || ''">
                 <span class="dot" :class="a.last_test_status === 'ok' ? 'dot-ok' : 'dot-bad'" />
@@ -566,7 +630,7 @@ onMounted(reload)
             </td>
           </tr>
           <tr v-if="!pageItems.length">
-            <td colspan="9" class="empty-cell">
+            <td colspan="10" class="empty-cell">
               <div v-if="loading" class="note">加载中…</div>
               <div v-else>
                 <div class="empty-title">{{ accounts.length ? '没有匹配的账号' : '账号库还是空的' }}</div>
@@ -642,4 +706,10 @@ onMounted(reload)
   .bulk-bar { flex-wrap: wrap; }
   .imp { flex-basis: 100%; order: 9; border-left: 0; border-right: 0; padding-left: 0; margin: 4px 0 0; }
 }
+
+.group-filter { width: 150px; flex: 0 0 auto; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 60; }
+.modal { background: var(--card, #fff); border-radius: 12px; padding: 20px; width: 400px; max-width: 92vw; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
+.modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+.badge { background: color-mix(in srgb, var(--accent, #4f7cff) 12%, transparent); color: var(--accent, #4f7cff); }
 </style>

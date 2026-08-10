@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import * as grok from '@/api/grok'
 import * as edu from '@/api/edu'
+import * as gw from '@/api/gateway'
 import { confirmBox } from '@/utils/confirm'
 
 const form = reactive({
@@ -9,6 +10,7 @@ const form = reactive({
   email_mode: 'mailtm', captcha_provider: 'ezsolver',
   browser: 'chrome', os_type: 'macos', skip_verify: true,
   auto_import: false, import_convert_inflight: 4, import_proxy_mode: 'registration', proxy_pick_mode: 'random',
+  gateway_group_id: '', gateway_group_name: '',
   auto_pause_on_failures: true, auto_pause_wait_minutes: 5, auto_pause_fail_threshold: 10,
   proxy: '', outlook_data: '', use_proxy_pool: true,
   icloud_account_ids: [] as string[],
@@ -17,12 +19,34 @@ const form = reactive({
 
 const cfg = ref<any>({})
 const status = ref<any>({ running: false, results: [], accounts_count: 0 })
+
+// 流水线模式开关(默认开启;存 batch_config.pipeline_mode,随 cfg 自动保存)
+const pipelineMode = computed({
+  get: () => cfg.value?.batch_config?.pipeline_mode !== false,
+  set: (v: boolean) => {
+    if (!cfg.value.batch_config) cfg.value.batch_config = {}
+    cfg.value.batch_config.pipeline_mode = v
+  }
+})
 const logs = ref<string[]>([])
 const logFilter = ref('')
 const logCopied = ref('')
 const poolCount = ref(0)
 const eduWorkers = ref<any[]>([])
 const starting = ref(false)
+
+// 网关分组（入库落组下拉）
+const gatewayGroups = ref<gw.GatewayGroup[]>([])
+async function loadGatewayGroups() {
+  try {
+    const g = await gw.getGroups()
+    gatewayGroups.value = g.groups
+  } catch { /* 网关不可用静默 */ }
+}
+function syncGroupName() {
+  const g = gatewayGroups.value.find((x) => x.id === form.gateway_group_id)
+  form.gateway_group_name = g?.name || ''
+}
 const stopping = ref(false)
 const msg = ref('')
 const msgKind = ref<'info' | 'error'>('info')
@@ -319,6 +343,8 @@ async function reload() {
   form.os_type = cfg.value.default_os_type || form.os_type
   form.skip_verify = cfg.value?.skip_verify !== false
   form.auto_import = !!cfg.value?.auto_import
+  form.gateway_group_id = cfg.value?.gateway_group_id || ''
+  form.gateway_group_name = cfg.value?.gateway_group_name || ''
   form.import_convert_inflight = cfg.value?.import_convert_inflight || 4
   form.import_proxy_mode = cfg.value?.import_proxy_mode || 'registration'
   form.proxy_pick_mode = cfg.value?.proxy_pick_mode || 'random'
@@ -357,6 +383,8 @@ async function saveCfg() {
     auto_import: form.auto_import,
     import_convert_inflight: form.import_convert_inflight,
     import_proxy_mode: form.import_proxy_mode,
+    gateway_group_id: form.gateway_group_id,
+    gateway_group_name: form.gateway_group_name,
     proxy_pick_mode: form.proxy_pick_mode,
     auto_pause_on_failures: form.auto_pause_on_failures,
     auto_pause_wait_minutes: form.auto_pause_wait_minutes,
@@ -373,10 +401,12 @@ watch(
     browser: form.browser, os_type: form.os_type,
     skip_verify: form.skip_verify,
     auto_import: form.auto_import, import_convert_inflight: form.import_convert_inflight, import_proxy_mode: form.import_proxy_mode,
+    gateway_group_id: form.gateway_group_id, gateway_group_name: form.gateway_group_name,
     proxy_pick_mode: form.proxy_pick_mode,
     auto_pause_on_failures: form.auto_pause_on_failures,
     auto_pause_wait_minutes: form.auto_pause_wait_minutes,
-    auto_pause_fail_threshold: form.auto_pause_fail_threshold
+    auto_pause_fail_threshold: form.auto_pause_fail_threshold,
+    pipeline_mode: cfg.value?.batch_config?.pipeline_mode
   }),
   () => {
     if (cfgSaveTimer) clearTimeout(cfgSaveTimer)
@@ -461,6 +491,7 @@ async function stop() {
 onMounted(async () => {
   await reload()
   await scrollLogsToEnd()
+  loadGatewayGroups()
   timer = setInterval(async () => {
     try {
       status.value = await grok.getStatus()
@@ -576,6 +607,7 @@ onUnmounted(() => clearInterval(timer))
             <label class="fld">延迟 (s)<input class="input" v-model.number="form.delay" type="number" min="0" /></label>
             <label class="fld">步进延迟 (s)<input class="input" v-model.number="form.step_delay" type="number" min="0" /></label>
           </div>
+          <label class="fld check"><input type="checkbox" v-model="pipelineMode" /> 流水线模式(预取打码)<span class="hint-inline">打码与等码/提交重叠,吞吐 +50%</span></label>
           <p class="hint">并发越高越快，但触发风控概率上升；步进延迟作用于单账号内的每一步。</p>
         </div>
       </div>
@@ -782,6 +814,12 @@ onUnmounted(() => clearInterval(timer))
               <select class="input" v-model="form.import_proxy_mode">
                 <option value="registration">跟随注册</option>
                 <option value="direct">直连</option>
+              </select>
+            </label>
+            <label class="fld" style="grid-column: 1 / -1">入库到网关分组
+              <select class="input" v-model="form.gateway_group_id" @change="syncGroupName">
+                <option value="">（不入组）</option>
+                <option v-for="g in gatewayGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
               </select>
             </label>
           </div>
@@ -1067,6 +1105,11 @@ onUnmounted(() => clearInterval(timer))
   min-width: 0;
   /* .content 可视高 = 100vh - top-h - 44px(上下 padding)，再减掉吸顶偏移 */
   max-height: calc(100vh - var(--top-h) - 28px - var(--cmd-h, 120px));
+  /* 没有这两条，子级 flex 项（.logs → .log-box 的 min-height）会顶破
+     max-height，日志直接溢出到卡片外面。min-height:0 解除 flex 子项的
+     自动最小尺寸，overflow:hidden 兜住任何越界内容。 */
+  min-height: 0;
+  overflow: hidden;
 }
 @media (max-width: 1080px) {
   .work { grid-template-columns: 1fr; }
@@ -1132,6 +1175,9 @@ onUnmounted(() => clearInterval(timer))
 }
 .fld > .input, .fld > .textarea, .fld > select { margin-top: 5px; }
 .fld .fld-n { margin-left: 6px; font-weight: 500; color: var(--ink-3); }
+.fld.check { display: flex; align-items: center; gap: 7px; margin-top: 9px; font-weight: 550; }
+.fld.check input { accent-color: var(--accent); width: 15px; height: 15px; }
+.hint-inline { font-weight: 450; color: var(--ink-3); }
 .hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--ink-3); }
 .hint.warn { color: var(--accent); font-weight: 650; }
 .hint.accent { color: var(--accent); }
@@ -1328,6 +1374,8 @@ onUnmounted(() => clearInterval(timer))
   gap: 8px;
   flex: 1;
   min-height: 0;
+  /* 卡片自身兜底：内部任何子项越界都裁在圆角边框内，不再糊到卡片外 */
+  overflow: hidden;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
@@ -1347,8 +1395,12 @@ onUnmounted(() => clearInterval(timer))
 .logs-act .btn-icon svg { width: 15px; height: 15px; }
 .log-box {
   flex: 1;
-  min-height: 260px;
+  /* 不能用 min-height 硬底（会顶破 .mon-col 的 max-height 导致日志跑出卡片）。
+     min-height:0 让它老实收缩，靠 flex-basis 争取高度，容器矮时内部滚动。 */
+  min-height: 0;
+  flex-basis: 260px;
   overflow: auto;
+  overscroll-behavior: contain;
   border-radius: 11px;
   border: 1px solid var(--line);
   background: #14110f;
