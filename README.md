@@ -2,6 +2,8 @@
 
 A standalone desktop **Grok registration workbench**: batch account registration, EDU email provisioning, captcha plugin orchestration and iCloud email automation — all in a local desktop app with a web UI.
 
+![Grok-Nobody screenshot](assets/screenshot.png)
+
 ## Architecture
 
 - **Frontend**: Vue 3 + TypeScript + Vite + Tailwind
@@ -17,7 +19,6 @@ grok-nobody/
   backend/          # Go module
   frontend/         # Vue app
   plugins/          # engine plugins (see plugins/README.md)
-  docs/             # architecture and release documentation
 ```
 
 ## Development
@@ -188,7 +189,7 @@ The account store, proxy pool and settings all live on the local machine (no net
 
 ## Release model
 
-The protected Windows release pipeline (obfuscated executable + encrypted `plugins.ufp` bundle) is described in [docs/WINDOWS_PROTECTION.md](docs/WINDOWS_PROTECTION.md). Release binaries require a trusted Authenticode certificate from the publisher; this repository does not forge production certificates.
+The protected Windows release pipeline uses an obfuscated executable plus an encrypted `plugins.ufp` bundle. Release binaries require a trusted Authenticode certificate from the publisher; this repository does not forge production certificates.
 
 ## Lineage
 

@@ -25,6 +25,9 @@ plugins/.runtime/
 *.so
 *.bin
 
+# README screenshot exception
+!assets/screenshot.png
+
 # ===== Build artifacts (go:embed needs frontend/dist -> backend/internal/web/dist) =====
 frontend/node_modules/
 frontend/dist/
@@ -36,10 +39,8 @@ dist/
 packaging/
 scripts/
 
-# ===== Internal review/analysis docs (not shipped) =====
-docs/GAP_ANALYSIS.md
-docs/REVIEW_0.2.1.md
-docs/REVIEW_EDU_FIX.md
+# ===== Docs (not shipped) =====
+docs/
 
 # ===== Local ops script (not shipped) =====
 /push-to-github.sh
