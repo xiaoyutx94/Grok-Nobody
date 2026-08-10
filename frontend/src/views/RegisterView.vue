@@ -11,6 +11,7 @@ const form = reactive({
   browser: 'chrome', os_type: 'macos', skip_verify: true,
   auto_import: false, import_convert_inflight: 4, import_proxy_mode: 'registration', proxy_pick_mode: 'random',
   gateway_group_id: '', gateway_group_name: '',
+  import_max_retries: 3, import_remove_on_fail: true,
   auto_pause_on_failures: true, auto_pause_wait_minutes: 5, auto_pause_fail_threshold: 10,
   proxy: '', outlook_data: '', use_proxy_pool: true,
   icloud_account_ids: [] as string[],
@@ -23,9 +24,17 @@ const status = ref<any>({ running: false, results: [], accounts_count: 0 })
 // 流水线模式开关(默认开启;存 batch_config.pipeline_mode,随 cfg 自动保存)
 const pipelineMode = computed({
   get: () => cfg.value?.batch_config?.pipeline_mode !== false,
-  set: (v: boolean) => {
+  set: (v) => {
     if (!cfg.value.batch_config) cfg.value.batch_config = {}
     cfg.value.batch_config.pipeline_mode = v
+  }
+})
+// 代理连续失败阈值(默认 3;达到后验证→淘汰/补位或重连换出口)
+const batchMaxProxyFails = computed({
+  get: () => cfg.value?.batch_config?.max_proxy_fails || 3,
+  set: (v) => {
+    if (!cfg.value.batch_config) cfg.value.batch_config = {}
+    cfg.value.batch_config.max_proxy_fails = v
   }
 })
 const logs = ref<string[]>([])
@@ -347,6 +356,8 @@ async function reload() {
   form.gateway_group_name = cfg.value?.gateway_group_name || ''
   form.import_convert_inflight = cfg.value?.import_convert_inflight || 4
   form.import_proxy_mode = cfg.value?.import_proxy_mode || 'registration'
+  form.import_max_retries = cfg.value?.import_max_retries || 3
+  form.import_remove_on_fail = cfg.value?.import_remove_on_fail !== false
   form.proxy_pick_mode = cfg.value?.proxy_pick_mode || 'random'
   form.auto_pause_on_failures = cfg.value?.auto_pause_on_failures !== false
   form.auto_pause_wait_minutes = cfg.value?.auto_pause_wait_minutes || 5
@@ -385,6 +396,8 @@ async function saveCfg() {
     import_proxy_mode: form.import_proxy_mode,
     gateway_group_id: form.gateway_group_id,
     gateway_group_name: form.gateway_group_name,
+    import_max_retries: form.import_max_retries,
+    import_remove_on_fail: form.import_remove_on_fail,
     proxy_pick_mode: form.proxy_pick_mode,
     auto_pause_on_failures: form.auto_pause_on_failures,
     auto_pause_wait_minutes: form.auto_pause_wait_minutes,
@@ -402,11 +415,14 @@ watch(
     skip_verify: form.skip_verify,
     auto_import: form.auto_import, import_convert_inflight: form.import_convert_inflight, import_proxy_mode: form.import_proxy_mode,
     gateway_group_id: form.gateway_group_id, gateway_group_name: form.gateway_group_name,
+    import_max_retries: form.import_max_retries, import_remove_on_fail: form.import_remove_on_fail,
     proxy_pick_mode: form.proxy_pick_mode,
     auto_pause_on_failures: form.auto_pause_on_failures,
     auto_pause_wait_minutes: form.auto_pause_wait_minutes,
     auto_pause_fail_threshold: form.auto_pause_fail_threshold,
-    pipeline_mode: cfg.value?.batch_config?.pipeline_mode
+    pipeline_mode: cfg.value?.batch_config?.pipeline_mode,
+    // 整体提交 batch_config（含代理连续失败阈值等全部调优字段）
+    batch_config: cfg.value?.batch_config,
   }),
   () => {
     if (cfgSaveTimer) clearTimeout(cfgSaveTimer)
@@ -608,6 +624,10 @@ onUnmounted(() => clearInterval(timer))
             <label class="fld">步进延迟 (s)<input class="input" v-model.number="form.step_delay" type="number" min="0" /></label>
           </div>
           <label class="fld check"><input type="checkbox" v-model="pipelineMode" /> 流水线模式(预取打码)<span class="hint-inline">打码与等码/提交重叠,吞吐 +50%</span></label>
+          <label class="fld proxy-fail-fld">代理连续失败阈值
+            <input class="input" type="number" v-model.number="batchMaxProxyFails" min="1" max="10" style="width: 90px" />
+            <span class="hint-inline">连续失败达阈值 → 即时验证：不可用即淘汰并从储备补位，可用则重连换出口（有备用代理自动顶替）</span>
+          </label>
           <p class="hint">并发越高越快，但触发风控概率上升；步进延迟作用于单账号内的每一步。</p>
         </div>
       </div>
@@ -815,6 +835,13 @@ onUnmounted(() => clearInterval(timer))
                 <option value="registration">跟随注册</option>
                 <option value="direct">直连</option>
               </select>
+            </label>
+            <label class="fld">入库重试次数
+              <input class="input" type="number" v-model.number="form.import_max_retries" min="1" max="10" />
+            </label>
+            <label class="fld check" title="重试超限仍失败时从账号库删除该账号（不保留 SSO 兜底）">
+              <input type="checkbox" v-model="form.import_remove_on_fail" /> 失败自动清除
+              <span class="hint-inline">重试超限即删号</span>
             </label>
           </div>
 

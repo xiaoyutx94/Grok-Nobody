@@ -64,6 +64,10 @@ type Config struct {
 	// GroupName 由前端随提交携带（engine 不依赖 gateway 包，避免循环依赖）。
 	GatewayGroupID   string `json:"gateway_group_id,omitempty"`
 	GatewayGroupName string `json:"gateway_group_name,omitempty"`
+	// 入库重试次数（SSO→OAuth 转换，默认 3；超过仍失败按 ImportRemoveOnFail 处理）
+	ImportMaxRetries int `json:"import_max_retries,omitempty"`
+	// 入库重试超限仍失败时自动清除该账号（默认 true；false = 保留 SSO 兜底）
+	ImportRemoveOnFail bool `json:"import_remove_on_fail"`
 	// 注册出口代理选择：random=随机打乱（默认，与 sub2api 一致）；round_robin=顺序轮转
 	ProxyPickMode    string `json:"proxy_pick_mode,omitempty"`
 	CaptchaProxyMode string `json:"captcha_proxy_mode,omitempty"`
@@ -101,6 +105,8 @@ func DefaultConfig() Config {
 		AutoImport:             false,
 		ImportConvertInflight:  4,
 		ImportProxyMode:        "registration",
+		ImportMaxRetries:       3,
+		ImportRemoveOnFail:     true,
 		ProxyPickMode:          "random",
 		DefaultDelay:           0,
 		DefaultStepDelay:       0,
@@ -1037,16 +1043,20 @@ func (e *RegisterEngine) run(parent context.Context, cfg Config, in StartInput, 
 							useProxy = false
 						}
 						convStart := time.Now()
-						// 入库重试：默认 3 次（2s/4s 退避）——OAuth 转换失败多为
+						// 入库重试：次数可配置（默认 3 次，2s/4s 退避）——OAuth 转换失败多为
 						// 瞬时网络抖动，一次失败直接放弃太浪费（SSO 保留兜底）。
+						retries := cfg.ImportMaxRetries
+						if retries <= 0 {
+							retries = 3
+						}
 						var tok *grokregister.GrokOAuthToken
 						var cerr error
-						for attempt := 0; attempt < 3; attempt++ {
+						for attempt := 0; attempt < retries; attempt++ {
 							tok, cerr = grokregister.ConvertSSOToOAuth(context.Background(), sso, ssoRw, proxy, useProxy)
 							if cerr == nil && tok != nil {
 								break
 							}
-							if attempt < 2 {
+							if attempt < retries-1 {
 								time.Sleep(time.Duration(2*(attempt+1)) * time.Second)
 							}
 						}
@@ -1060,6 +1070,18 @@ func (e *RegisterEngine) run(parent context.Context, cfg Config, in StartInput, 
 							full["imported"] = true
 							e.recordAutoImport(email, true, "", convMS)
 							e.appendLog(fmt.Sprintf("[自动入库] %s 转换成功 → 已入库（%.1fs）", email, float64(convMS)/1000))
+						} else if cfg.ImportRemoveOnFail {
+							// 重试超限仍失败 → 自动清除该账号（默认行为；可关）
+							full["imported"] = false
+							e.recordAutoImport(email, false, fmt.Sprint(cerr), convMS)
+							if removed, derr := e.accounts.DeleteByEmail(context.Background(), email); derr != nil {
+								e.appendLog(fmt.Sprintf("[自动入库] %s 清除失败: %v", email, derr))
+							} else if removed {
+								e.appendLog(fmt.Sprintf("[自动入库] %s 重试 %d 次仍失败 → 已自动清除账号（不再保留 SSO 兜底）: %v", email, retries, cerr))
+							} else {
+								e.appendLog(fmt.Sprintf("[自动入库] %s 重试 %d 次仍失败（账号未入库，无需清除）: %v", email, retries, cerr))
+							}
+							return
 						} else {
 							full["imported"] = false
 							e.recordAutoImport(email, false, fmt.Sprint(cerr), convMS)

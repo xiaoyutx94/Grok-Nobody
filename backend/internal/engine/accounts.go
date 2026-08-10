@@ -218,26 +218,49 @@ func (s *AccountService) UpsertFromResult(ctx context.Context, result map[string
 }
 
 func (s *AccountService) Delete(ctx context.Context, ids []string) (int, error) {
-        s.mu.Lock()
-        defer s.mu.Unlock()
-        list, err := s.load(ctx)
-        if err != nil {
-                return 0, err
-        }
-        drop := map[string]struct{}{}
-        for _, id := range ids {
-                drop[id] = struct{}{}
-        }
-        out := list[:0]
-        n := 0
-        for _, a := range list {
-                if _, ok := drop[a.ID]; ok {
-                        n++
-                        continue
-                }
-                out = append(out, a)
-        }
-        return n, s.save(ctx, out)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load(ctx)
+	if err != nil {
+		return 0, err
+	}
+	drop := map[string]struct{}{}
+	for _, id := range ids {
+		drop[id] = struct{}{}
+	}
+	out := list[:0]
+	n := 0
+	for _, a := range list {
+		if _, ok := drop[a.ID]; ok {
+			n++
+			continue
+		}
+		out = append(out, a)
+	}
+	return n, s.save(ctx, out)
+}
+
+// DeleteByEmail 按邮箱删除账号（入库失败自动清除用），返回是否删除了账号。
+func (s *AccountService) DeleteByEmail(ctx context.Context, email string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load(ctx)
+	if err != nil {
+		return false, err
+	}
+	out := list[:0]
+	removed := false
+	for _, a := range list {
+		if strings.EqualFold(a.Email, email) {
+			removed = true
+			continue
+		}
+		out = append(out, a)
+	}
+	if !removed {
+		return false, nil
+	}
+	return true, s.save(ctx, out)
 }
 
 func (s *AccountService) Clear(ctx context.Context) error {

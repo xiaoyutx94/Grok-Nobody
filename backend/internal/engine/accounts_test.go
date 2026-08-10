@@ -1,6 +1,12 @@
 package engine
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/umbraforge/desktop/internal/store"
+)
 
 func TestSplitProxyNote(t *testing.T) {
 	cases := []struct {
@@ -17,4 +23,25 @@ func TestSplitProxyNote(t *testing.T) {
 			t.Fatalf("%q => url=%q note=%q, want url=%q note=%q", c.in, u, n, c.url, c.note)
 		}
 	}
+}
+
+func TestDeleteByEmail(t *testing.T) {
+	st, err := store.NewJSONStore(t.TempDir())
+	require.NoError(t, err)
+	s := NewAccountService(st)
+	ctx := context.Background()
+	for _, e := range []string{"a@x.com", "b@x.com"} {
+		_, err := s.UpsertFromResult(ctx, map[string]any{"email": e, "access_token": "tok"})
+		require.NoError(t, err)
+	}
+	removed, err := s.DeleteByEmail(ctx, "A@X.COM")
+	require.NoError(t, err)
+	require.True(t, removed, "大小写不敏感匹配")
+	list, _ := s.List(ctx)
+	require.Len(t, list, 1)
+	require.Equal(t, "b@x.com", list[0].Email)
+
+	removed, err = s.DeleteByEmail(ctx, "nope@x.com")
+	require.NoError(t, err)
+	require.False(t, removed)
 }
