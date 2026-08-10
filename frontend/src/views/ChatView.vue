@@ -8,6 +8,8 @@ interface Msg {
   content: string
   thinking: string
   tools: { name: string; status: string; detail?: string }[]
+  toolResults: { name: string; output: string }[]
+  images: string[]
   error?: string
   account?: string
 }
@@ -17,28 +19,22 @@ const models = ref<chat.GatewayModel[]>([])
 const model = ref('grok-4.5')
 const effort = ref('high')
 const feat = ref(false)
-const fast = ref(false)
 const input = ref('')
+const images = ref<string[]>([])
 const msgs = ref<Msg[]>([])
 const streaming = ref(false)
 const thinkingOpen = ref<Record<number, boolean>>({})
 const scrollBox = ref<HTMLElement | null>(null)
 let aborter: AbortController | null = null
 
-// 思考等级选项：优先当前模型的官方 reasoning_efforts，无则回落官方 CLI 值域
+// 思考等级：同步官方（reasoning_efforts id 原样），无则回落官方 CLI 值域（id 原样）
 const effortOptions = computed(() => {
   const m = models.value.find((x) => x.id === model.value)
   const official = m?.reasoning_efforts
-  if (official?.length) {
-    return official.map((e) => ({
-      value: e.id,
-      label: e.label ? `${e.id} · ${e.label}` : e.id
-    }))
-  }
+  if (official?.length) return official.map((e) => ({ value: e.id, label: e.id }))
   return chat.EFFORT_OPTIONS
 })
 
-// 默认 effort：模型目录标记 default 的档位，无则 high
 function defaultEffortFor(mid: string): string {
   const m = models.value.find((x) => x.id === mid)
   const def = m?.reasoning_efforts?.find((e) => e.default)
@@ -50,11 +46,9 @@ async function loadModels() {
     const list = await chat.getModels()
     if (!list.length) return
     models.value = list
-    if (!list.some((m) => m.id === model.value)) {
-      model.value = list[0].id
-    }
+    if (!list.some((m) => m.id === model.value)) model.value = list[0].id
     effort.value = defaultEffortFor(model.value)
-  } catch { /* 网关不可用时保持默认 */ }
+  } catch { /* 保持默认 */ }
 }
 
 function onModelChange() {
@@ -64,26 +58,80 @@ function onModelChange() {
 const EXAMPLES = [
   '帮我写一个 Python 快速排序，带注释',
   '解释一下 TCP 三次握手，用生活例子',
-  '搜一下今天东京天气（feat 模式）',
+  '抓取 https://example.com 的标题（feat 模式）',
   '用中文写一首关于秋天的短诗'
 ]
 
 onMounted(loadModels)
 
+// ---------- markdown 渲染（上下文格式化；先转义防 XSS） ----------
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function renderMd(text: string): string {
+  const esc = escapeHtml(text)
+  const blocks: string[] = []
+  const withCode = esc.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+    blocks.push(code)
+    return `\u0000CODE${blocks.length - 1}\u0000`
+  })
+  let html = ''
+  let inList = false
+  const closeList = () => { if (inList) { html += '</ul>'; inList = false } }
+  for (const line of withCode.split('\n')) {
+    const h = line.match(/^(#{1,3})\s+(.*)$/)
+    if (h) { closeList(); html += `<h${h[1].length}>${h[2]}</h${h[1].length}>`; continue }
+    const li = line.match(/^\s*[-*]\s+(.*)$/)
+    if (li) {
+      if (!inList) { html += '<ul>'; inList = true }
+      html += `<li>${li[1]}</li>`
+      continue
+    }
+    closeList()
+    if (!line.trim()) { html += '<br/>'; continue }
+    let l = line
+    l = l.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    l = l.replace(/`([^`]+)`/g, '<code>$1</code>')
+    html += `<p>${l}</p>`
+  }
+  closeList()
+  return html.replace(/\u0000CODE(\d+)\u0000/g, (_m, i) => `<pre><code>${blocks[+i]}</code></pre>`)
+}
+
+// ---------- 粘贴图片 ----------
+function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items || []
+  for (const it of items) {
+    if (it.type.startsWith('image/')) {
+      const f = it.getAsFile()
+      if (!f) continue
+      if (f.size > 8 * 1024 * 1024) continue
+      const reader = new FileReader()
+      reader.onload = () => {
+        images.value.push(String(reader.result))
+        input.value = input.value.replace(/[\r\n]+$/, '')
+      }
+      reader.readAsDataURL(f)
+      e.preventDefault()
+      break
+    }
+  }
+}
+
+// ---------- 发送 ----------
 async function send() {
   const text = input.value.trim()
-  if (!text || streaming.value) return
-  msgs.value.push({ role: 'user', content: text, thinking: '', tools: [] })
-  const cur: Msg = { role: 'assistant', content: '', thinking: '', tools: [] }
+  if ((!text && !images.value.length) || streaming.value) return
+  msgs.value.push({ role: 'user', content: text, thinking: '', tools: [], toolResults: [], images: [...images.value] })
+  const cur: Msg = { role: 'assistant', content: '', thinking: '', tools: [], toolResults: [], images: [] }
   msgs.value.push(cur)
   const idx = msgs.value.length - 1
   input.value = ''
+  images.value = []
   streaming.value = true
   thinkingOpen.value[idx] = true
   aborter = new AbortController()
-
-  // fast 模式：强制极简推理（快速响应）
-  const eff = fast.value ? 'minimal' : effort.value
 
   const history = msgs.value
     .slice(0, -1)
@@ -92,7 +140,14 @@ async function send() {
 
   try {
     for await (const ev of chat.chatStream(
-      { model: model.value, effort: eff, feat: feat.value, message: text, history },
+      {
+        model: model.value,
+        effort: effort.value,
+        feat: feat.value,
+        message: text,
+        history,
+        images: cur.images.length ? cur.images : undefined
+      } as any,
       aborter.signal
     )) {
       const d = ev.data
@@ -105,7 +160,6 @@ async function send() {
           break
         case 'text_delta':
           cur.content += d.text
-          await scroll()
           break
         case 'tool_call':
           if (d.status === 'start') cur.tools.push({ name: d.name, status: 'start' })
@@ -113,15 +167,15 @@ async function send() {
             const t = cur.tools.find((x) => x.name === d.name)
             if (t) { t.status = 'done'; t.detail = d.detail }
           }
-          await scroll()
+          break
+        case 'tool_result':
+          cur.toolResults.push({ name: d.name, output: d.output })
           break
         case 'error':
           cur.error = d.message
           break
         case 'done':
-          if (!cur.content && !cur.thinking && !cur.tools.length && !cur.error) {
-            cur.content = '（无输出）'
-          }
+          if (!cur.content && !cur.thinking && !cur.tools.length && !cur.error) cur.content = '（无输出）'
           break
       }
       await scroll()
@@ -148,7 +202,6 @@ function useExample(ex: string) {
   input.value = ex
 }
 
-// 输入框自动增高（最多 200px）
 function autoGrow(e: Event) {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
@@ -162,20 +215,29 @@ function autoGrow(e: Event) {
     <div class="chat-scroll" ref="scrollBox">
       <div v-if="!msgs.length" class="empty">
         <div class="empty-title">对话</div>
-        <div class="note">多轮上下文 · 流式输出 · 思考折叠 · feat 工具调用 · 全账号池免分组</div>
+        <div class="note">多轮上下文 · 流式输出 · 思考折叠 · feat 工具调用 · 粘贴图片 · 全账号池免分组</div>
         <div class="examples">
           <button v-for="ex in EXAMPLES" :key="ex" class="chip" @click="useExample(ex)">{{ ex }}</button>
         </div>
       </div>
 
       <div v-for="(m, i) in msgs" :key="i" class="msg" :class="'is-' + m.role">
+        <!-- 用户附件图片 -->
+        <div v-if="m.images.length" class="attach">
+          <img v-for="(img, ii) in m.images" :key="ii" :src="img" class="attach-img" alt="attachment" />
+        </div>
+
         <!-- 工具调用 -->
         <div v-if="m.tools.length" class="tools">
           <div v-for="(t, ti) in m.tools" :key="ti" class="tool" :class="'is-' + t.status">
-            <span class="tool-ico">{{ t.name.includes('x_search') ? '✕' : '🔍' }}</span>
+            <span class="tool-ico">{{ t.name.includes('x_search') ? '✕' : t.name === 'web_fetch' ? '⛏' : '🔍' }}</span>
             <span class="tool-name">{{ t.name }}</span>
-            <span class="tool-status">{{ t.status === 'start' ? '搜索中…' : '完成' }}</span>
+            <span class="tool-status">{{ t.status === 'start' ? '执行中…' : '完成' }}</span>
             <span v-if="t.detail && t.detail !== 'completed'" class="tool-detail">{{ t.detail }}</span>
+          </div>
+          <div v-for="(tr, tri) in m.toolResults" :key="'r' + tri" class="tool-result">
+            <div class="tr-head">↳ {{ tr.name }} 结果</div>
+            <pre class="tr-body">{{ tr.output }}</pre>
           </div>
         </div>
 
@@ -188,41 +250,47 @@ function autoGrow(e: Event) {
           <div v-if="thinkingOpen[i]" class="think-body">{{ m.thinking }}</div>
         </div>
 
-        <!-- 正文 -->
-        <div v-if="m.content" class="content">{{ m.content }}</div>
+        <!-- 正文（markdown 格式化渲染） -->
+        <div v-if="m.content" class="content" v-html="renderMd(m.content)"></div>
         <div v-if="m.error" class="error">{{ m.error }}</div>
         <div v-if="i === msgs.length - 1 && streaming" class="cursor">▋</div>
       </div>
     </div>
 
     <!-- 输入区（IDE 风格：配置全部内嵌） -->
-    <div class="composer" :class="{ 'is-focus': input }">
+    <div class="composer" :class="{ 'is-focus': input || images.length }">
       <div class="toolbar">
         <span class="mode-label">模型</span>
         <select class="tb-select" v-model="model" title="模型" @change="onModelChange">
           <option v-for="m in models" :key="m.id" :value="m.id">{{ chat.modelLabel(m) }}</option>
-          <option v-if="!models.length" value="grok-4.5">grok-4.5（加载中…）</option>
+          <option v-if="!models.length" value="grok-4.5">grok-4.5</option>
         </select>
 
         <span class="tb-sep" />
 
         <span class="mode-label">思考</span>
-        <select class="tb-select" v-model="effort" title="思考等级" :disabled="fast">
+        <select class="tb-select" v-model="effort" title="思考等级">
           <option v-for="e in effortOptions" :key="e.value" :value="e.value">{{ e.label }}</option>
         </select>
 
         <span class="tb-sep" />
 
-        <button class="tb-chip" :class="{ on: feat }" @click="feat = !feat" title="任务模式：启用 web 搜索等工具调用">feat</button>
-        <button class="tb-chip" :class="{ on: fast }" @click="fast = !fast" title="快速模式：极简推理，更快响应">fast</button>
+        <button class="tb-chip" :class="{ on: feat }" @click="feat = !feat" title="任务模式：web 搜索 / 网页抓取工具">feat</button>
+      </div>
+
+      <!-- 图片附件预览 -->
+      <div v-if="images.length" class="attach-preview">
+        <div v-for="(img, i) in images" :key="i" class="attach-item">
+          <img :src="img" alt="paste" />
+          <button class="attach-x" @click="images.splice(i, 1)">✕</button>
+        </div>
       </div>
 
       <div class="input-row">
-        <textarea v-model="input" rows="1" class="input" placeholder="输入消息…（Enter 发送 / Shift+Enter 换行）"
-          :disabled="streaming" @keydown.enter.exact.prevent="send"
-          @input="autoGrow" />
+        <textarea v-model="input" rows="1" class="input" placeholder="输入消息…（Enter 发送 / Shift+Enter 换行 / 可直接粘贴图片）"
+          :disabled="streaming" @keydown.enter.exact.prevent="send" @paste="onPaste" @input="autoGrow" />
         <button v-if="streaming" class="send-btn stop" title="停止" @click="stop">■</button>
-        <button v-else class="send-btn" :disabled="!input.trim()" title="发送" @click="send">↑</button>
+        <button v-else class="send-btn" :disabled="!input.trim() && !images.length" title="发送" @click="send">↑</button>
       </div>
     </div>
   </div>
@@ -240,14 +308,23 @@ function autoGrow(e: Event) {
 .msg.is-user { align-self: flex-end; }
 .msg.is-assistant { align-self: flex-start; width: 100%; }
 .content { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 13.5px; }
+.content :deep(h1), .content :deep(h2), .content :deep(h3) { margin: 10px 0 4px; font-size: 15px; line-height: 1.4; }
+.content :deep(p) { margin: 4px 0; }
+.content :deep(ul) { margin: 4px 0; padding-left: 20px; }
+.content :deep(code) { background: rgba(0,0,0,0.08); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace; }
+.content :deep(pre) { background: rgba(0,0,0,0.08); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0; }
+.content :deep(pre code) { background: none; padding: 0; }
 .is-user .content {
   background: var(--accent, #4f7cff); color: #fff; padding: 9px 14px;
   border-radius: 14px 14px 3px 14px; max-width: 78%;
 }
-.is-assistant .content { padding: 2px 4px; }
+.is-user .content :deep(code), .is-user .content :deep(pre) { background: rgba(255,255,255,0.18); }
 .error { color: var(--danger, #d33); font-size: 12.5px; }
 .cursor { animation: blink 1s step-end infinite; color: var(--accent, #4f7cff); font-size: 15px; }
 @keyframes blink { 50% { opacity: 0; } }
+
+.attach { display: flex; gap: 8px; flex-wrap: wrap; }
+.attach-img { max-width: 220px; max-height: 160px; border-radius: 10px; border: 1px solid var(--border); }
 
 .thinking { border-left: 2px solid color-mix(in srgb, var(--warn, #b8860b) 55%, transparent); padding-left: 10px; margin: 2px 0; }
 .think-head { display: flex; align-items: center; gap: 6px; background: none; border: none; cursor: pointer; color: var(--warn, #b8860b); font-size: 12px; font-weight: 600; padding: 2px 0; }
@@ -258,6 +335,9 @@ function autoGrow(e: Event) {
 .tool-name { font-weight: 600; font-family: ui-monospace, monospace; }
 .tool-status { color: var(--muted); font-size: 11px; }
 .tool-detail { color: var(--muted); font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-result { align-self: flex-start; max-width: 90%; background: var(--bg-code, rgba(0,0,0,0.05)); border-radius: 8px; padding: 6px 10px; }
+.tr-head { font-size: 11px; font-weight: 600; opacity: 0.7; }
+.tr-body { font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto; margin-top: 4px; font-family: ui-monospace, monospace; }
 
 /* 输入区（IDE 风格） */
 .composer {
@@ -283,7 +363,11 @@ function autoGrow(e: Event) {
 }
 .tb-chip:hover { border-color: var(--accent, #4f7cff); }
 .tb-chip.on { border-color: var(--accent, #4f7cff); color: var(--accent, #4f7cff); background: color-mix(in srgb, var(--accent, #4f7cff) 10%, transparent); }
-.tb-chip:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.attach-preview { display: flex; gap: 8px; padding: 6px 12px 0; flex-wrap: wrap; }
+.attach-item { position: relative; }
+.attach-item img { max-width: 96px; max-height: 72px; border-radius: 8px; border: 1px solid var(--border); }
+.attach-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: none; background: var(--danger, #d33); color: #fff; font-size: 10px; cursor: pointer; }
 
 .input-row { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px; }
 .input-row textarea {

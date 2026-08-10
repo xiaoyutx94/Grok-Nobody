@@ -142,6 +142,149 @@ func TestChatEffortMapping(t *testing.T) {
 	}
 }
 
+// 工具循环：模型 function_call(web_fetch) → 后端执行 → 结果回传 → 第二轮文本完成
+func TestChatToolLoopWebFetch(t *testing.T) {
+	t.Setenv("GATEWAY_CHAT_ALLOW_PRIVATE", "1") // 测试用 httptest 127.0.0.1，绕过 SSRF 防护
+	gin.SetMode(gin.ReleaseMode)
+	// web_fetch 目标（假页面）
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html><title>Hello Fetch</title></html>"))
+	}))
+	defer page.Close()
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		var req map[string]any
+		_ = json.Unmarshal(body, &req)
+		input := req["input"].([]any)
+		hasOutput := false
+		for _, it := range input {
+			if m, ok := it.(map[string]any); ok && m["type"] == "function_call_output" {
+				hasOutput = true
+				require.Contains(t, m["output"], "Hello Fetch", "工具结果应回传第二轮")
+			}
+		}
+		if !hasOutput {
+			// 第一轮：function_call
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"fc_1\",\"name\":\"web_fetch\"}}\n\n" +
+					"data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"url\\\":\\\"" + page.URL + "\\\"}\"}\n\n" +
+					"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"fc_1\",\"name\":\"web_fetch\"}}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}\n\n" +
+					"data: [DONE]\n\n"))
+		} else {
+			// 第二轮：文本完成
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.output_text.delta\",\"delta\":\"抓取完成\"}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r2\",\"status\":\"completed\"}}\n\n" +
+					"data: [DONE]\n\n"))
+		}
+	})
+
+	st := newTestStore(t)
+	svc := NewGatewayService(st, engine.NewAccountService(st))
+	ctx := context.Background()
+	require.NoError(t, svc.Store().EnsureDefaults(ctx))
+	svcs, _ := svc.Store().listServices(ctx)
+	for i := range svcs {
+		svcs[i].BaseURL = "http://upstream.invalid/v1" // 下面用 httptest 替换
+	}
+	require.NoError(t, svc.Store().save(ctx, KeyServices, svcs))
+
+	_, err := engine.NewAccountService(st).UpsertFromResult(ctx, map[string]any{
+		"email": "tool@x.com", "access_token": "tok-tool",
+	})
+	require.NoError(t, err)
+
+	// 覆盖上游为 httptest server
+	up := httptest.NewServer(upstream)
+	defer up.Close()
+	svcs, _ = svc.Store().listServices(ctx)
+	for i := range svcs {
+		svcs[i].BaseURL = up.URL + "/v1"
+	}
+	require.NoError(t, svc.Store().save(ctx, KeyServices, svcs))
+
+	req := httptest.NewRequest("POST", "/api/v1/admin/gateway/chat", bytes.NewReader([]byte(
+		`{"model":"grok-4.5","effort":"medium","feat":true,"message":"抓取页面"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = req
+	svc.HandleChat(ginCtx)
+
+	events := parseChatSSE(rec.Body.String())
+	types := map[string]int{}
+	for _, e := range events {
+		types[e["_event"].(string)]++
+	}
+	require.Equal(t, 2, types["tool_call"], "web_fetch 开始+完成")
+	require.Equal(t, 1, types["tool_result"], "执行结果回传事件")
+	require.Contains(t, rec.Body.String(), "Hello Fetch", "工具结果内容透传前端")
+	require.Equal(t, 1, types["text_delta"], "第二轮文本输出")
+	require.Equal(t, 1, types["done"])
+}
+
+func TestBlockPrivateURL(t *testing.T) {
+	blocked, reason := blockPrivateURL("http://127.0.0.1:8080/x")
+	require.True(t, blocked)
+	require.NotEmpty(t, reason)
+	blocked, _ = blockPrivateURL("http://localhost/x")
+	require.True(t, blocked)
+	blocked, _ = blockPrivateURL("http://192.168.1.1/x")
+	require.True(t, blocked)
+	blocked, _ = blockPrivateURL("http://10.0.0.5/x")
+	require.True(t, blocked)
+	blocked, _ = blockPrivateURL("ftp://example.com/x")
+	require.True(t, blocked)
+	blocked, _ = blockPrivateURL("not-a-url")
+	require.True(t, blocked)
+}
+
+func TestChatImagesInput(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	var captured []byte
+	upstream := httptest.NewServer(chatMockUpstream(&captured))
+	defer upstream.Close()
+	st := newTestStore(t)
+	svc := NewGatewayService(st, engine.NewAccountService(st))
+	ctx := context.Background()
+	require.NoError(t, svc.Store().EnsureDefaults(ctx))
+	svcs, _ := svc.Store().listServices(ctx)
+	for i := range svcs {
+		svcs[i].BaseURL = upstream.URL + "/v1"
+	}
+	require.NoError(t, svc.Store().save(ctx, KeyServices, svcs))
+	_, err := engine.NewAccountService(st).UpsertFromResult(ctx, map[string]any{
+		"email": "img@x.com", "access_token": "tok-img",
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/v1/admin/gateway/chat", bytes.NewReader([]byte(
+		`{"model":"grok-4.5","effort":"medium","feat":false,"message":"看这张图","images":["data:image/png;base64,iVBORw0KGgo="]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = req
+	svc.HandleChat(ginCtx)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal(captured, &sent))
+	input := sent["input"].([]any)
+	last := input[len(input)-1].(map[string]any)
+	content := last["content"].([]any)
+	found := false
+	for _, c := range content {
+		cm := c.(map[string]any)
+		if cm["type"] == "input_image" {
+			require.Equal(t, "data:image/png;base64,iVBORw0KGgo=", cm["image_url"])
+			found = true
+		}
+	}
+	require.True(t, found, "图片应构造为 input_image 块")
+}
+
 func TestPickerAllAccountsGroup(t *testing.T) {
 	st := newTestStore(t)
 	seedAccounts(t, st, []engine.Account{

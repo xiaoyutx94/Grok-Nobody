@@ -15,16 +15,11 @@ export interface ChatRequest {
   history: ChatMessage[]
 }
 
-// 官方 grok CLI 的 reasoning effort 值域（含中文说明）——模型目录无 reasoning_efforts 时的兜底
-export const EFFORT_OPTIONS = [
-  { value: 'none', label: '无推理（最快）' },
-  { value: 'minimal', label: '极简推理' },
-  { value: 'low', label: '轻量推理（更快）' },
-  { value: 'medium', label: '平衡推理' },
-  { value: 'high', label: '深度推理' },
-  { value: 'xhigh', label: '扩展推理' },
-  { value: 'max', label: '最大推理' }
-]
+// 官方 grok CLI 的 reasoning effort 值域（原样显示，不翻译）——模型目录无 reasoning_efforts 时的兜底
+export const EFFORT_OPTIONS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((v) => ({
+  value: v,
+  label: v
+}))
 
 // 官方模型目录条目（网关 /v1/models 动态转发 cli-chat-proxy 权威数据）
 export interface GatewayModel {
