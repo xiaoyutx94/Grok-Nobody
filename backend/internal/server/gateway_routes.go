@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -16,6 +17,25 @@ func (a *API) registerGatewayRoutes(admin *gin.RouterGroup) {
 	// ---------- 状态与配置 ----------
 	gw.GET("/status", func(c *gin.Context) {
 		c.JSON(http.StatusOK, a.Gateway.Status())
+	})
+	// 可访问地址：监听配置 + 本机 LAN IP（内外网连接用）
+	gw.GET("/addresses", func(c *gin.Context) {
+		cfg, err := a.Gateway.Store().GetConfig(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		host := cfg.ListenHost
+		if host == "" {
+			host = gateway.DefaultListenHost
+		}
+		lan := a.Gateway.LocalAddresses()
+		c.JSON(http.StatusOK, gin.H{
+			"listen_host": host,
+			"lan":         lan,
+			"local":       fmt.Sprintf("127.0.0.1:%d", cfg.Port),
+			"port":        cfg.Port,
+		})
 	})
 	gw.GET("/config", func(c *gin.Context) {
 		cfg, err := a.Gateway.Store().GetConfig(c.Request.Context())
@@ -144,6 +164,15 @@ func (a *API) registerGatewayRoutes(admin *gin.RouterGroup) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	// 复制完整密钥（列表默认脱敏，仅按需取回）
+	gw.POST("/keys/:id/reveal", func(c *gin.Context) {
+		k, err := a.Gateway.Store().GetKeyFull(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"key": k.KeyFull})
 	})
 
 	// ---------- 服务 ----------

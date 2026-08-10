@@ -43,6 +43,9 @@ type UpstreamService struct {
 type GatewayConfig struct {
 	Enabled bool `json:"enabled"` // 默认 true：随 app 启动监听
 	Port    int  `json:"port"`    // 默认 18789
+	// ListenHost 监听地址：0.0.0.0 = 内外网均可访问（默认，需 Key 认证）；
+	// 127.0.0.1 = 仅本机。空值兼容旧数据 = 0.0.0.0。
+	ListenHost string `json:"listen_host,omitempty"`
 }
 
 // 存储 key（settings.json 顶层）。
@@ -53,6 +56,8 @@ const (
 	KeyConfig   = "gateway_config"
 
 	DefaultPort = 18789
+	// DefaultListenHost 默认监听所有网卡（内外网可访问，靠 API Key 认证）。
+	DefaultListenHost = "0.0.0.0"
 
 	DefaultServiceID = "grok-official"
 	DefaultGroupID   = "default"

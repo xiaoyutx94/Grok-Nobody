@@ -75,6 +75,19 @@ export const createKey = async (body: { name: string; group_id: string }) =>
 export const setKeyStatus = async (id: string, status: string) =>
   unwrap<GatewayAPIKey>(await api.put(`/api/v1/admin/gateway/keys/${id}`, { status }))
 export const deleteKey = async (id: string) => unwrap(await api.delete(`/api/v1/admin/gateway/keys/${id}`))
+// 取回完整密钥（复制用，列表默认脱敏）
+export const revealKey = async (id: string) =>
+  unwrap<{ key: string }>(await api.post(`/api/v1/admin/gateway/keys/${id}/reveal`))
+
+// 可访问地址（监听 host + 本机 LAN IP）
+export interface GatewayAddresses {
+  listen_host: string
+  lan: string[]
+  local: string
+  port: number
+}
+export const getAddresses = async () =>
+  unwrap<GatewayAddresses>(await api.get('/api/v1/admin/gateway/addresses'))
 
 export const getServices = async () =>
   unwrap<{ services: UpstreamService[] }>(await api.get('/api/v1/admin/gateway/services'))

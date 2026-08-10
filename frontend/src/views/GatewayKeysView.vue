@@ -10,6 +10,9 @@ const showForm = ref(false)
 const form = ref({ name: '', group_id: '' })
 const created = ref<gw.GatewayAPIKey | null>(null)
 const busy = ref(true)
+// 复制视觉反馈：keyId → 'copied'（2s 后清除）
+const copiedId = ref('')
+let copyTimer: any = null
 
 async function load() {
   busy.value = true
@@ -37,14 +40,27 @@ async function create() {
   }
 }
 
-function copyKey(k: gw.GatewayAPIKey) {
-  const text = k.key_full || ''
-  if (!text) {
-    toast('完整密钥仅在创建时显示一次，无法再次复制')
-    return
+// 复制完整密钥：列表行 → reveal 接口取回 → 剪贴板 → 视觉反馈
+async function copyKeyById(id: string) {
+  try {
+    const r = await gw.revealKey(id)
+    await writeClipboard(r.key)
+    flashCopied(id)
+  } catch (e: any) {
+    toast('复制失败: ' + (e?.response?.data?.error || e?.message || e), 'bad')
   }
-  toast('密钥已复制')
-  navigator.clipboard?.writeText(text).catch(() => {
+}
+
+// 创建弹窗复制（key_full 已在内存）
+async function copyCreated() {
+  if (!created.value?.key_full) return
+  await writeClipboard(created.value.key_full)
+  flashCopied(created.value.id)
+}
+
+function writeClipboard(text: string): Promise<void> {
+  // 不弹提示：视觉反馈靠复制按钮/图标变绿（✓ 2s）
+  return (navigator.clipboard?.writeText(text) || Promise.reject(new Error('no clipboard'))).catch(() => {
     const ta = document.createElement('textarea')
     ta.value = text
     document.body.appendChild(ta)
@@ -52,6 +68,12 @@ function copyKey(k: gw.GatewayAPIKey) {
     document.execCommand('copy')
     ta.remove()
   })
+}
+
+function flashCopied(id: string) {
+  copiedId.value = id
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => { copiedId.value = '' }, 2000)
 }
 
 async function toggle(k: gw.GatewayAPIKey) {
@@ -93,10 +115,12 @@ onMounted(load)
   </div>
 
   <div v-if="created" class="card key-show">
-    <div class="key-title">新密钥已生成（仅显示这一次，请立即复制保存）</div>
+    <div class="key-title">新密钥已生成（点击复制，立即保存）</div>
     <div class="key-line">
       <code class="mono">{{ created.key_full }}</code>
-      <button class="btn" @click="copyKey(created!)">复制</button>
+      <button class="btn" :class="{ 'copied': copiedId === created.id }" @click="copyCreated">
+        {{ copiedId === created.id ? '✓ 已复制' : '复制密钥' }}
+      </button>
       <button class="btn ghost" @click="created = null">关闭</button>
     </div>
   </div>
@@ -116,7 +140,16 @@ onMounted(load)
       <tbody>
         <tr v-for="k in keys" :key="k.id">
           <td>{{ k.name }}</td>
-          <td><code class="mono small">{{ k.key }}</code></td>
+          <td>
+            <div class="key-cell">
+              <code class="mono small">{{ k.key }}</code>
+              <button class="icon-btn" :class="{ 'copied': copiedId === k.id }"
+                :title="copiedId === k.id ? '已复制' : '复制完整密钥'" @click="copyKeyById(k.id)">
+                <span v-if="copiedId === k.id" class="copied-mark">✓</span>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+              </button>
+            </div>
+          </td>
           <td>{{ groupName(k.group_id) }}</td>
           <td><span class="badge" :class="k.status === 'active' ? 'ok' : 'err'">{{ k.status === 'active' ? '启用' : '禁用' }}</span></td>
           <td class="dim small">{{ k.created_at?.slice(0, 19).replace('T', ' ') }}</td>
@@ -159,6 +192,10 @@ onMounted(load)
 .key-title { font-weight: 600; margin-bottom: 8px; }
 .key-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .key-line code { background: var(--bg-code, rgba(0,0,0,0.05)); padding: 8px 10px; border-radius: 8px; word-break: break-all; }
+.key-cell { display: flex; align-items: center; gap: 6px; }
+.icon-btn.copied { color: var(--success, #1a7f37); }
+.copied-mark { font-weight: 700; font-size: 14px; }
+.btn.copied { background: var(--success, #1a7f37); border-color: var(--success, #1a7f37); color: #fff; }
 .f-label { display: block; margin: 10px 0 4px; font-size: 13px; opacity: 0.8; }
 .f-input { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }

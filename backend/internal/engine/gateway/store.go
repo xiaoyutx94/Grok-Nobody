@@ -463,6 +463,24 @@ func (s *GatewayStore) GetKeyBySecret(ctx context.Context, secret string) (Gatew
 	return GatewayAPIKey{}, fmt.Errorf("无效密钥")
 }
 
+// GetKeyFull 按 id 返回完整密钥（复制用；禁用状态也返回）。
+func (s *GatewayStore) GetKeyFull(ctx context.Context, id string) (GatewayAPIKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys, err := s.listKeys(ctx)
+	if err != nil {
+		return GatewayAPIKey{}, err
+	}
+	for _, k := range keys {
+		if k.ID == id {
+			k.KeyFull = k.Key
+			k.Key = maskKey(k.Key)
+			return k, nil
+		}
+	}
+	return GatewayAPIKey{}, fmt.Errorf("密钥不存在: %s", id)
+}
+
 // SetKeyStatus 启用/禁用密钥。
 func (s *GatewayStore) SetKeyStatus(ctx context.Context, id, status string) (GatewayAPIKey, error) {
 	s.mu.Lock()
@@ -526,21 +544,32 @@ func (s *GatewayStore) GetConfig(ctx context.Context) (GatewayConfig, error) {
 	defer s.mu.Unlock()
 	var cfg GatewayConfig
 	if err := s.load(ctx, KeyConfig, &cfg); err != nil {
-		return GatewayConfig{Enabled: true, Port: DefaultPort}, nil
+		return GatewayConfig{Enabled: true, Port: DefaultPort, ListenHost: DefaultListenHost}, nil
 	}
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		cfg.Port = DefaultPort
 	}
+	if strings.TrimSpace(cfg.ListenHost) == "" {
+		cfg.ListenHost = DefaultListenHost
+	}
 	return cfg, nil
 }
 
-// SetConfig 保存配置（端口 1-65535 校验）。
+// SetConfig 保存配置（端口 1-65535 校验；listen_host 仅允许 0.0.0.0/127.0.0.1）。
 func (s *GatewayStore) SetConfig(ctx context.Context, cfg GatewayConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return fmt.Errorf("端口无效: %d", cfg.Port)
 	}
+	host := strings.TrimSpace(cfg.ListenHost)
+	if host == "" {
+		host = DefaultListenHost
+	}
+	if host != "0.0.0.0" && host != "127.0.0.1" {
+		return fmt.Errorf("listen_host 仅支持 0.0.0.0（内外网）或 127.0.0.1（仅本机）")
+	}
+	cfg.ListenHost = host
 	return s.save(ctx, KeyConfig, cfg)
 }
 

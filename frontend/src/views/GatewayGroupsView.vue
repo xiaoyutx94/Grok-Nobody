@@ -57,6 +57,21 @@ function toggleProxy(url: string) {
   else form.value.proxy_ids.push(url)
 }
 
+// 代理备注（地区标识）：从代理池条目匹配
+function proxyNote(url: string): string {
+  const e = pool.value.find((p) => p.url === url)
+  return e?.note || ''
+}
+
+// 分组绑定代理的展示摘要（url + 备注）
+function proxySummary(ids: string[]): string {
+  if (!ids?.length) return ''
+  return ids.map((u) => {
+    const n = proxyNote(u)
+    return n ? `${u}（${n}）` : u
+  }).join('\n')
+}
+
 async function save() {
   if (!form.value.name.trim()) {
     toast('分组名称不能为空')
@@ -124,7 +139,7 @@ onMounted(load)
           <td>{{ svcName(g.service_id || '') }}</td>
           <td>
             <span v-if="!g.proxy_ids?.length" class="dim">直连</span>
-            <span v-else class="badge">{{ g.proxy_ids.length }} 个代理</span>
+            <span v-else class="badge" :title="proxySummary(g.proxy_ids)">{{ g.proxy_ids.length }} 个代理</span>
           </td>
           <td>
             <span class="mono">{{ stats[g.id]?.available ?? 0 }}/{{ stats[g.id]?.total ?? 0 }}</span>
@@ -154,12 +169,13 @@ onMounted(load)
           {{ s.name }}（{{ s.type }}）{{ s.enabled ? '' : '· 已禁用' }}
         </option>
       </select>
-      <label class="f-label">转发出口代理（从代理池选择，空 = 直连）</label>
+      <label class="f-label">转发出口代理（从代理池选择，空 = 直连；备注显示地区）</label>
       <div class="proxy-pick">
         <div v-if="!pool.length" class="dim small">代理池暂无启用代理，分组将直连 grok 官方</div>
         <label v-for="p in pool" :key="p.url" class="proxy-item">
           <input type="checkbox" :checked="form.proxy_ids.includes(p.url)" @change="toggleProxy(p.url)" />
           <span class="mono small">{{ p.url }}</span>
+          <span v-if="p.note" class="proxy-note">{{ p.note }}</span>
         </label>
       </div>
       <div class="modal-actions">
@@ -179,6 +195,7 @@ onMounted(load)
 .small { font-size: 12px; }
 .proxy-pick { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
 .proxy-item { display: flex; align-items: center; gap: 8px; padding: 3px 4px; cursor: pointer; font-size: 13px; }
+.proxy-note { color: var(--accent, #4f7cff); font-size: 11.5px; background: color-mix(in srgb, var(--accent, #4f7cff) 10%, transparent); padding: 1px 6px; border-radius: 6px; white-space: nowrap; }
 .f-label { display: block; margin: 10px 0 4px; font-size: 13px; opacity: 0.8; }
 .f-input { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,7 +72,11 @@ func (g *GatewayService) startLocked(cfg GatewayConfig) (string, bool, error) {
 	if g.srv != nil {
 		return g.addr, true, nil // 已在运行
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
+	host := strings.TrimSpace(cfg.ListenHost)
+	if host == "" {
+		host = DefaultListenHost
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, cfg.Port))
 	if err != nil {
 		return "", false, fmt.Errorf("网关端口 %d 监听失败（可能被占用）: %w", cfg.Port, err)
 	}
@@ -137,6 +142,31 @@ func (g *GatewayService) portOf() int {
 		}
 	}
 	return g.config.Port
+}
+
+// LocalAddresses 返回本机可访问的 IPv4 地址列表（供网关页展示内外网地址）。
+// 排除 loopback 与虚拟网卡；与网关同端口拼接。
+func (g *GatewayService) LocalAddresses() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	port := g.portOf()
+	var out []string
+	seen := map[string]bool{}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() || ipnet.IP.To4() == nil {
+			continue
+		}
+		ip := ipnet.IP.To4().String()
+		if seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, fmt.Sprintf("%s:%d", ip, port))
+	}
+	return out
 }
 
 // Status 网关运行状态。

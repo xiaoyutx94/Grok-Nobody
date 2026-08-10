@@ -267,3 +267,44 @@ func TestGatewayStoreGroupProxyBinding(t *testing.T) {
 	// 内置服务不可删
 	require.Error(t, gs.DeleteService(ctx, DefaultServiceID))
 }
+
+func TestGatewayGetKeyFull(t *testing.T) {
+	st := newTestStore(t)
+	gs := NewGatewayStore(st)
+	ctx := context.Background()
+	require.NoError(t, gs.EnsureDefaults(ctx))
+
+	k, err := gs.CreateKey(ctx, "复制测试", DefaultGroupID)
+	require.NoError(t, err)
+
+	full, err := gs.GetKeyFull(ctx, k.ID)
+	require.NoError(t, err)
+	require.Equal(t, k.KeyFull, full.KeyFull, "reveal 必须返回完整密钥")
+	require.Contains(t, full.Key, "…", "响应展示字段仍应脱敏")
+
+	_, err = gs.GetKeyFull(ctx, "不存在")
+	require.Error(t, err)
+}
+
+func TestGatewayConfigListenHost(t *testing.T) {
+	st := newTestStore(t)
+	gs := NewGatewayStore(st)
+	ctx := context.Background()
+	require.NoError(t, gs.EnsureDefaults(ctx))
+
+	// 默认 0.0.0.0（内外网）
+	cfg, err := gs.GetConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, DefaultListenHost, cfg.ListenHost)
+
+	// 非法 host 拒绝
+	require.Error(t, gs.SetConfig(ctx, GatewayConfig{Enabled: true, Port: 18789, ListenHost: "8.8.8.8"}))
+	// 合法切换
+	require.NoError(t, gs.SetConfig(ctx, GatewayConfig{Enabled: true, Port: 18789, ListenHost: "127.0.0.1"}))
+	cfg, _ = gs.GetConfig(ctx)
+	require.Equal(t, "127.0.0.1", cfg.ListenHost)
+	// 空 host 回落默认
+	require.NoError(t, gs.SetConfig(ctx, GatewayConfig{Enabled: true, Port: 18789}))
+	cfg, _ = gs.GetConfig(ctx)
+	require.Equal(t, DefaultListenHost, cfg.ListenHost)
+}
