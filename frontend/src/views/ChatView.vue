@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import * as chat from '@/api/chat'
 
 // 消息模型
@@ -12,6 +12,8 @@ interface Msg {
   account?: string
 }
 
+// 动态模型目录（官方权威）
+const models = ref<chat.GatewayModel[]>([])
 const model = ref('grok-4.5')
 const effort = ref('high')
 const feat = ref(false)
@@ -23,12 +25,50 @@ const thinkingOpen = ref<Record<number, boolean>>({})
 const scrollBox = ref<HTMLElement | null>(null)
 let aborter: AbortController | null = null
 
+// 思考等级选项：优先当前模型的官方 reasoning_efforts，无则回落官方 CLI 值域
+const effortOptions = computed(() => {
+  const m = models.value.find((x) => x.id === model.value)
+  const official = m?.reasoning_efforts
+  if (official?.length) {
+    return official.map((e) => ({
+      value: e.id,
+      label: e.label ? `${e.id} · ${e.label}` : e.id
+    }))
+  }
+  return chat.EFFORT_OPTIONS
+})
+
+// 默认 effort：模型目录标记 default 的档位，无则 high
+function defaultEffortFor(mid: string): string {
+  const m = models.value.find((x) => x.id === mid)
+  const def = m?.reasoning_efforts?.find((e) => e.default)
+  return def?.id || effort.value
+}
+
+async function loadModels() {
+  try {
+    const list = await chat.getModels()
+    if (!list.length) return
+    models.value = list
+    if (!list.some((m) => m.id === model.value)) {
+      model.value = list[0].id
+    }
+    effort.value = defaultEffortFor(model.value)
+  } catch { /* 网关不可用时保持默认 */ }
+}
+
+function onModelChange() {
+  effort.value = defaultEffortFor(model.value)
+}
+
 const EXAMPLES = [
   '帮我写一个 Python 快速排序，带注释',
   '解释一下 TCP 三次握手，用生活例子',
   '搜一下今天东京天气（feat 模式）',
   '用中文写一首关于秋天的短诗'
 ]
+
+onMounted(loadModels)
 
 async function send() {
   const text = input.value.trim()
@@ -159,15 +199,16 @@ function autoGrow(e: Event) {
     <div class="composer" :class="{ 'is-focus': input }">
       <div class="toolbar">
         <span class="mode-label">模型</span>
-        <select class="tb-select" v-model="model" title="模型">
-          <option v-for="m in chat.MODEL_OPTIONS" :key="m.value" :value="m.value">{{ m.label }}</option>
+        <select class="tb-select" v-model="model" title="模型" @change="onModelChange">
+          <option v-for="m in models" :key="m.id" :value="m.id">{{ chat.modelLabel(m) }}</option>
+          <option v-if="!models.length" value="grok-4.5">grok-4.5（加载中…）</option>
         </select>
 
         <span class="tb-sep" />
 
         <span class="mode-label">思考</span>
         <select class="tb-select" v-model="effort" title="思考等级" :disabled="fast">
-          <option v-for="e in chat.EFFORT_OPTIONS" :key="e.value" :value="e.value">{{ e.label }}</option>
+          <option v-for="e in effortOptions" :key="e.value" :value="e.value">{{ e.label }}</option>
         </select>
 
         <span class="tb-sep" />

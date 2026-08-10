@@ -23,6 +23,17 @@ func (g *GatewayService) routes() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// CORS：前端（管理 API 端口）跨端口调用网关 /v1/*（模型列表等）
+	r.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
 	r.POST("/v1/responses", g.auth(), g.handleForward("responses"))
 	r.POST("/v1/chat/completions", g.auth(), g.handleForward("chat"))
 	r.POST("/v1/messages", g.auth(), g.handleMessages())
@@ -191,17 +202,48 @@ func flushCopy(c *gin.Context, r io.Reader) {
 	}
 }
 
-// handleModels 返回分组可用模型列表。
+// handleModels 动态返回上游真实模型目录（官方权威，非硬编码）：
+// 用分组账号 token 调 cli-chat-proxy /v1/models，轮询最多 3 个账号合并去重
+// （免费/付费账号目录可能不同）。全部失败才回退官方默认模型 grok-4.5。
 func (g *GatewayService) handleModels() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		models := []map[string]any{
-			{"id": "grok-4.5", "object": "model", "owned_by": "xai"},
-			{"id": "grok-4.5-thinking", "object": "model", "owned_by": "xai"},
-			{"id": "grok-4", "object": "model", "owned_by": "xai"},
-			{"id": "grok-4-fast", "object": "model", "owned_by": "xai"},
-			{"id": "grok-3.5", "object": "model", "owned_by": "xai"},
-			{"id": "grok-3", "object": "model", "owned_by": "xai"},
-			{"id": "grok-2", "object": "model", "owned_by": "xai"},
+		seen := map[string]bool{}
+		var models []map[string]any
+		for i := 0; i < 3 && len(seen) < 5; i++ {
+			_, svc, entry, err := g.resolveTarget(c)
+			if err != nil {
+				break
+			}
+			res, ferr := g.forwardUpstream(c.Request.Context(), svc.BaseURL, "/models", http.MethodGet, nil, "", "application/json", entry.Account, "", svc.Type == "grok")
+			g.picker.Release(entry.Account.ID)
+			if ferr != nil {
+				continue
+			}
+			if res.Status >= 400 {
+				res.Body.Close()
+				continue
+			}
+			var payload struct {
+				Data []map[string]any `json:"data"`
+			}
+			raw, rerr := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+			res.Body.Close()
+			if rerr != nil || json.Unmarshal(raw, &payload) != nil {
+				continue
+			}
+			for _, m := range payload.Data {
+				id, _ := m["id"].(string)
+				if id != "" && !seen[id] {
+					seen[id] = true
+					models = append(models, m)
+				}
+			}
+		}
+		if len(models) == 0 {
+			// 兜底：仅官方默认模型（不猜测其他模型名）
+			models = []map[string]any{
+				{"id": "grok-4.5", "object": "model", "owned_by": "xAI", "name": "Grok 4.5"},
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"object": "list", "data": models})
 	}

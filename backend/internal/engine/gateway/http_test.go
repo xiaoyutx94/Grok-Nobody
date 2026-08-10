@@ -241,13 +241,22 @@ func TestGatewayNoAccountInGroup(t *testing.T) {
 }
 
 func TestGatewayModelsEndpoint(t *testing.T) {
+	// models 现在动态转发上游（官方权威目录）
 	upstream := func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("models 不应转发上游")
+		require.Equal(t, "/v1/models", r.URL.Path)
+		require.NotEmpty(t, r.Header.Get("x-grok-client-version"), "models 请求应带 grok CLI 身份头")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[
+			{"id":"grok-4.5","object":"model","owned_by":"xAI","name":"Grok 4.5","context_window":500000,"supports_reasoning_effort":true,"reasoning_efforts":[{"id":"high","label":"High Effort"},{"id":"low","label":"Low Effort"}]},
+			{"id":"grok-4.5-thinking","object":"model","owned_by":"xAI","name":"Grok 4.5 Thinking"}
+		]}`))
 	}
 	svc, _, key := newTestGateway(t, upstream)
 	rec := gatewayDo(t, svc, "GET", "/v1/models", key, "")
 	require.Equal(t, 200, rec.Code)
 	require.Contains(t, rec.Body.String(), "grok-4.5")
+	require.Contains(t, rec.Body.String(), "grok-4.5-thinking")
+	require.Contains(t, rec.Body.String(), "context_window", "应透传官方模型元数据（含 reasoning_efforts）")
 }
 
 // ---------- 代理出口 ----------
