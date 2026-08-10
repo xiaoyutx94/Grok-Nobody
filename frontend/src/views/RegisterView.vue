@@ -816,13 +816,15 @@ onUnmounted(() => clearInterval(timer))
                 <option value="direct">直连</option>
               </select>
             </label>
-            <label class="fld" style="grid-column: 1 / -1">入库到网关分组
-              <select class="input" v-model="form.gateway_group_id" @change="syncGroupName">
-                <option value="">（不入组）</option>
-                <option v-for="g in gatewayGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
-              </select>
-            </label>
           </div>
+
+          <label class="fld gw-group-fld">注册入库到网关分组
+            <select class="input" v-model="form.gateway_group_id" @change="syncGroupName">
+              <option value="">（不入组）</option>
+              <option v-for="g in gatewayGroups" :key="g.id" :value="g.id">{{ g.name }}</option>
+            </select>
+            <span class="sw-n">注册成功自动入库时落入该分组（独立于「自动入库」开关，选组即生效）</span>
+          </label>
 
           <label class="sw">
             <input v-model="form.auto_pause_on_failures" type="checkbox" />
@@ -1276,6 +1278,8 @@ onUnmounted(() => clearInterval(timer))
 .sw:hover { background: color-mix(in srgb, var(--ink) 3.5%, transparent); }
 .sw-t { font-size: 12.5px; font-weight: 680; }
 .sw-n { font-size: 10.5px; color: var(--ink-3); }
+.gw-group-fld { display: flex; flex-direction: column; gap: 3px; margin: 8px 0 4px 3px; padding: 8px 10px; background: color-mix(in srgb, var(--accent-soft, #4f7cff) 6%, transparent); border-radius: 8px; }
+.gw-group-fld .input { margin-top: 4px; }
 .inset {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-left: 3px;

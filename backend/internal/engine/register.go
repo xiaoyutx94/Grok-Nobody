@@ -187,6 +187,9 @@ type StartInput struct {
 	// 显式关池：空 proxy_urls 会被服务端回填代理池，
 	// 只有这个标记为 false 才是真直连。指针区分「未传」与「传了 false」。
 	UseProxyPool *bool `json:"use_proxy_pool,omitempty"`
+	// 任务级网关分组：注册成功入库时落入该分组（空 = 跟随配置/不入组）。
+	GatewayGroupID   string `json:"gateway_group_id,omitempty"`
+	GatewayGroupName string `json:"gateway_group_name,omitempty"`
 }
 
 // PoolOptOut 表示调用方显式要求直连（关闭代理池），
@@ -553,6 +556,11 @@ func (e *RegisterEngine) Start(ctx context.Context, in StartInput) error {
 	}
 	if in.OSType == "" {
 		in.OSType = cfg.DefaultOSType
+	}
+	// 任务级网关分组覆盖（注册时选择的分组优先于配置；空 = 跟随配置）
+	if strings.TrimSpace(in.GatewayGroupID) != "" {
+		cfg.GatewayGroupID = strings.TrimSpace(in.GatewayGroupID)
+		cfg.GatewayGroupName = strings.TrimSpace(in.GatewayGroupName)
 	}
 	// Pre-validate email modes so UI gets a sync error instead of a silent empty batch.
 	mode := strings.ToLower(strings.TrimSpace(in.EmailMode))

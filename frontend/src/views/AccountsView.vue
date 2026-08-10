@@ -30,6 +30,8 @@ const groups = ref<gw.GatewayGroup[]>([])
 const groupFilter = ref('')
 const showMove = ref(false)
 const moveTarget = ref('')
+// 移动范围：selected = 仅勾选；filtered = 当前筛选结果全部
+const moveScope = ref<'selected' | 'filtered'>('selected')
 
 const testTarget = ref<any | null>(null)
 const detailTarget = ref<any | null>(null)
@@ -52,7 +54,8 @@ const filtered = computed(() => {
   else if (filter.value === 'pending') list = list.filter((a) => !a.imported)
   else if (filter.value === 'oauth') list = list.filter((a) => a.access_token)
   else if (filter.value === 'failed') list = list.filter((a) => a.last_test_status === 'fail')
-  if (groupFilter.value) list = list.filter((a) => a.group_id === groupFilter.value)
+  if (groupFilter.value === '__none__') list = list.filter((a) => !a.group_id)
+  else if (groupFilter.value) list = list.filter((a) => a.group_id === groupFilter.value)
 
   const s = q.value.trim().toLowerCase()
   if (!s) return list
@@ -101,9 +104,15 @@ async function reload() {
   }
 }
 
-// 批量移动到网关分组（A 组 → B 组）
+// 批量移动到网关分组（A 组 → B 组；支持仅勾选 / 当前筛选全部）
 async function doMove() {
-  if (!selected.value.length) return
+  const ids = moveScope.value === 'filtered'
+    ? filtered.value.map((a) => a.id)
+    : selected.value
+  if (!ids.length) {
+    toast('没有可移动的账号', 'bad')
+    return
+  }
   if (!moveTarget.value) {
     toast('请选择目标分组', 'bad')
     return
@@ -111,7 +120,7 @@ async function doMove() {
   const target = groups.value.find((g) => g.id === moveTarget.value)
   try {
     const r = await gw.moveAccounts({
-      ids: selected.value,
+      ids,
       group_id: target?.id || '',
       group_name: target?.name || ''
     })
@@ -461,6 +470,7 @@ onMounted(reload)
       </div>
       <select v-if="groups.length" class="input group-filter" v-model="groupFilter" @change="page = 1" title="按网关分组筛选">
         <option value="">全部分组</option>
+        <option value="__none__">未分组</option>
         <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
       </select>
       <div class="spacer" />
@@ -534,7 +544,16 @@ onMounted(reload)
     <div v-if="showMove" class="modal-mask" @click.self="showMove = false">
       <div class="modal">
         <h3>移动到分组</h3>
-        <p class="note">已选 <b>{{ selected.length }}</b> 个账号 → 目标分组（空 = 移出分组）</p>
+        <div class="move-scope">
+          <label class="scope-item">
+            <input type="radio" value="selected" v-model="moveScope" />
+            <span>仅勾选的 {{ selected.length }} 个账号</span>
+          </label>
+          <label class="scope-item">
+            <input type="radio" value="filtered" v-model="moveScope" />
+            <span>当前筛选结果全部 {{ filtered.length }} 个账号</span>
+          </label>
+        </div>
         <select class="input" v-model="moveTarget" style="width:100%; margin-top:8px">
           <option value="">（移出分组 / 不参与网关）</option>
           <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
@@ -708,6 +727,8 @@ onMounted(reload)
 }
 
 .group-filter { width: 150px; flex: 0 0 auto; }
+.move-scope { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.scope-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13.5px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 60; }
 .modal { background: var(--card, #fff); border-radius: 12px; padding: 20px; width: 400px; max-width: 92vw; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
