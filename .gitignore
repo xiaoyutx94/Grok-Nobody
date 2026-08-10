@@ -43,3 +43,4 @@ docs/REVIEW_EDU_FIX.md
 
 # ===== Local ops script (not shipped) =====
 /push-to-github.sh
+/build-release.sh

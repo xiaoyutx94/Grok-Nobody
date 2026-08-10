@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/umbraforge/desktop/internal/server"
 	"github.com/umbraforge/desktop/internal/store"
 	"github.com/umbraforge/desktop/internal/web"
-	webview "github.com/webview/webview_go"
 )
 
 func main() {
@@ -104,17 +102,7 @@ func main() {
 	if *headless {
 		waitSignal()
 	} else {
-		runtime.LockOSThread()
-		// Install Cocoa Edit menu so Cmd+C/V/X/A reach WKWebView inputs.
-		installNativeEditMenu()
-		w := webview.New(false)
-		defer w.Destroy()
-		w.SetTitle("Grok-Nobody")
-		w.SetSize(1440, 920, webview.HintNone)
-		applyWindowIcon(w)
-		// Clipboard: native Cocoa Edit menu only (no JS paste — avoids double insert).
-		w.Navigate(ui)
-		w.Run()
+		runUI(ui)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
