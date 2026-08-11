@@ -69,8 +69,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <span>{{ account.access_token ? '重取凭证' : '入库转换' }}</span>
         </button>
         <button class="row-menu-item" @click="pick('toggle-imported')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16v13H4z"/><path d="M9 11h6"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16v13H4z"/><path d="M9 11h6"/></svg>
           <span>{{ account.imported ? '标记未入库' : '标记已入库' }}</span>
+        </button>
+        <button class="row-menu-item" :class="{ 'is-danger': !account.banned_at }" @click="pick('toggle-ban')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.5 5.5l13 13"/></svg>
+          <span>{{ account.banned_at ? '解封账号' : '封禁账号' }}</span>
         </button>
         <div class="row-menu-sep" />
         <button class="row-menu-item is-danger" @click="pick('delete')">

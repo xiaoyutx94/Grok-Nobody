@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"log"
 	"math/rand"
 	"strings"
 	"sync"
@@ -72,8 +73,18 @@ func (p *AccountPicker) Pick(ctx context.Context, groupID string, proxies []stri
 		if strings.TrimSpace(acc.AccessToken) == "" {
 			continue // 无 OAuth 凭证不可用
 		}
+		// 落库健康状态（与内存状态合并）：封禁 / 限流中 / 临时不可调度一律跳过
+		if acc.BannedAt != "" {
+			continue
+		}
+		if until, err := time.Parse(time.RFC3339, acc.RateLimitResetAt); err == nil && now.Before(until) {
+			continue
+		}
+		if until, err := time.Parse(time.RFC3339, acc.TempUnschedulable); err == nil && now.Before(until) {
+			continue
+		}
 		if p.forbidden[acc.ID] {
-			continue // 403 永久封禁
+			continue // 403 永久封禁（内存）
 		}
 		if until, bad := p.cooldown[acc.ID]; bad && now.Before(until) {
 			continue
@@ -110,21 +121,39 @@ func (p *AccountPicker) Release(accountID string) {
 	}
 }
 
-// RecordFailure 记录转发失败并决定是否冷却。
-//   - 403 → 永久封禁（grok 风控「质」问题，账号不可再用）
-//   - 429 → 冷却 30min（量问题）
-//   - 其他网络错误 → 冷却 5min
+// RecordFailure 记录转发失败并决定是否冷却（内存 + 落库持久化，重启保留）。
+//   - 403 → 永久封禁（grok 风控「质」问题，账号不可再用）→ 写 BannedAt
+//   - 429 → 冷却 30min（量问题）→ 写 RateLimitResetAt
+//   - 其他网络错误 → 冷却 5min → 写 TempUnschedulable
 func (p *AccountPicker) RecordFailure(accountID string, statusCode int, errMsg string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	var persist *engine.AccountPatch
 	switch {
 	case statusCode == 403 || strings.Contains(strings.ToLower(errMsg), "forbidden"):
 		p.forbidden[accountID] = true
 		delete(p.cooldown, accountID)
+		now := time.Now().UTC().Format(time.RFC3339)
+		reason := "上游 403 风控封禁"
+		persist = &engine.AccountPatch{BannedAt: &now, BannedReason: &reason}
 	case statusCode == 429 || strings.Contains(strings.ToLower(errMsg), "rate limit"):
-		p.cooldown[accountID] = time.Now().Add(RateLimitCooldown)
+		until := time.Now().Add(RateLimitCooldown)
+		p.cooldown[accountID] = until
+		untilStr := until.UTC().Format(time.RFC3339)
+		persist = &engine.AccountPatch{RateLimitResetAt: &untilStr}
 	case errMsg != "":
-		p.cooldown[accountID] = time.Now().Add(NetworkCooldown)
+		until := time.Now().Add(NetworkCooldown)
+		p.cooldown[accountID] = until
+		untilStr := until.UTC().Format(time.RFC3339)
+		persist = &engine.AccountPatch{TempUnschedulable: &untilStr}
+	}
+	p.mu.Unlock()
+	if persist != nil {
+		// 异步落库（不阻塞选号）；JSON 写失败仅日志
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := p.accts.Update(ctx, accountID, *persist); err != nil {
+			log.Printf("[picker] 健康状态落库失败 %s: %v", accountID, err)
+		}
 	}
 }
 

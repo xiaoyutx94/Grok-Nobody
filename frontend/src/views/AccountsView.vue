@@ -9,7 +9,21 @@ import AccountDetailModal from '@/components/AccountDetailModal.vue'
 import AccountRowMenu from '@/components/AccountRowMenu.vue'
 
 const PAGE_SIZE = 50
-type Filter = 'all' | 'imported' | 'pending' | 'oauth' | 'failed'
+type Filter = 'all' | 'imported' | 'pending' | 'oauth' | 'failed' | 'available' | 'banned' | 'rate_limited'
+
+// 健康状态判断（sub2api 同款语义：封禁/限流/临时不可用）
+function isBanned(a: any): boolean {
+  return Boolean(a.banned_at)
+}
+function isRateLimited(a: any): boolean {
+  return Boolean(a.rate_limit_reset_at && new Date(a.rate_limit_reset_at).getTime() > Date.now())
+}
+function isTempUnavailable(a: any): boolean {
+  return Boolean(a.temp_unschedulable_until && new Date(a.temp_unschedulable_until).getTime() > Date.now())
+}
+function isAvailable(a: any): boolean {
+  return !isBanned(a) && !isRateLimited(a) && !isTempUnavailable(a)
+}
 
 const accounts = ref<any[]>([])
 const selected = ref<string[]>([])
@@ -36,6 +50,76 @@ const moveScope = ref<'selected' | 'filtered'>('selected')
 const testTarget = ref<any | null>(null)
 const detailTarget = ref<any | null>(null)
 const menu = reactive<{ acc: any | null; pos: { top: number; left: number } | null }>({ acc: null, pos: null })
+const usageBusy = ref('')
+
+// 用量列展示：剩 tokens + 已用金额（sub2api 风格）
+function usageBrief(a: any): string {
+  const q = a.quota || {}
+  const b = a.billing || {}
+  const parts: string[] = []
+  if (q.tokens?.remaining != null) {
+    const rem = Number(q.tokens.remaining)
+    parts.push(rem >= 10000 ? `${(rem / 10000).toFixed(rem >= 100000 ? 0 : 1)}万t` : `${rem}t`)
+  }
+  if (b.used_cents != null) parts.push(`$${(Number(b.used_cents) / 100).toFixed(2)}`)
+  return parts.join(' · ') || '—'
+}
+function usageTitle(a: any): string {
+  const q = a.quota || {}
+  const b = a.billing || {}
+  const lines: string[] = []
+  if (q.tokens?.remaining != null || q.tokens?.limit != null) {
+    lines.push(`Tokens: ${q.tokens.remaining ?? '?'} / ${q.tokens.limit ?? '?'}`)
+  }
+  if (q.requests?.remaining != null || q.requests?.limit != null) {
+    lines.push(`Requests: ${q.requests.remaining ?? '?'} / ${q.requests.limit ?? '?'}`)
+  }
+  if (q.retry_after_seconds) lines.push(`限流: 重置 ${q.retry_after_seconds}s`)
+  if (q.subscription_tier) lines.push(`订阅: ${q.subscription_tier}`)
+  if (b.used_cents != null || b.monthly_limit_cents != null) {
+    lines.push(`金额: $${(Number(b.used_cents || 0) / 100).toFixed(2)} / $${(Number(b.monthly_limit_cents || 0) / 100).toFixed(2)}`)
+  }
+  if (b.period_type) lines.push(`周期: ${b.period_type}`)
+  if (a.usage_fetched_at) lines.push(`查询于 ${shortTime(a.usage_fetched_at)}`)
+  return lines.join('\n') || '未查询'
+}
+
+// 查询单账号用量并更新列表项（billing/quota/限流状态落库后回显）
+async function queryUsage(a: any) {
+  usageBusy.value = a.id
+  try {
+    const data = await grok.fetchAccountUsage(a.id, true)
+    const idx = accounts.value.findIndex((x) => x.id === a.id)
+    if (idx >= 0) {
+      accounts.value[idx] = { ...accounts.value[idx], billing: data.billing, quota: data.quota, usage_fetched_at: new Date().toISOString() }
+      if (data.quota?.retry_after_seconds) {
+        accounts.value[idx].rate_limit_reset_at = new Date(Date.now() + data.quota.retry_after_seconds * 1000).toISOString()
+      }
+    }
+    toast('用量已更新', 'ok')
+  } catch (e: any) {
+    toast(e?.response?.data?.error || e?.message || '查询失败', 'bad')
+  } finally {
+    usageBusy.value = ''
+  }
+}
+
+// 封禁 / 解封（网关选号自动跳过封禁账号）
+async function toggleBan(a: any) {
+  try {
+    if (isBanned(a)) {
+      await grok.unbanAccount(a.id)
+    } else {
+      const ok = await confirmBox(`封禁账号 ${a.email || a.id}？网关将不再使用该账号（可随时解封）`)
+      if (!ok) return
+      await grok.banAccount(a.id, '手动封禁')
+    }
+    await load()
+    toast(isBanned(a) ? '已解封' : '已封禁')
+  } catch (e: any) {
+    toast(e?.response?.data?.error || e?.message || '操作失败', 'bad')
+  }
+}
 
 const stats = computed(() => {
   const list = accounts.value
@@ -44,7 +128,10 @@ const stats = computed(() => {
     imported: list.filter((a) => a.imported).length,
     pending: list.filter((a) => !a.imported).length,
     oauth: list.filter((a) => a.access_token).length,
-    failed: list.filter((a) => a.last_test_status === 'fail').length
+    failed: list.filter((a) => a.last_test_status === 'fail').length,
+    available: list.filter((a) => isAvailable(a)).length,
+    rateLimited: list.filter((a) => isRateLimited(a)).length,
+    banned: list.filter((a) => isBanned(a)).length
   }
 })
 
@@ -54,6 +141,9 @@ const filtered = computed(() => {
   else if (filter.value === 'pending') list = list.filter((a) => !a.imported)
   else if (filter.value === 'oauth') list = list.filter((a) => a.access_token)
   else if (filter.value === 'failed') list = list.filter((a) => a.last_test_status === 'fail')
+  else if (filter.value === 'available') list = list.filter((a) => isAvailable(a))
+  else if (filter.value === 'banned') list = list.filter((a) => isBanned(a))
+  else if (filter.value === 'rate_limited') list = list.filter((a) => isRateLimited(a))
   if (groupFilter.value === '__none__') list = list.filter((a) => !a.group_id)
   else if (groupFilter.value) list = list.filter((a) => a.group_id === groupFilter.value)
 
@@ -316,6 +406,9 @@ async function onMenuAction(name: string, acc: any) {
     case 'toggle-imported':
       await toggleImported(acc)
       break
+    case 'toggle-ban':
+      await toggleBan(acc)
+      break
     case 'delete':
       await deleteOne(acc)
       break
@@ -432,7 +525,7 @@ onMounted(reload)
     </div>
 
     <!-- 5 个筛选项：不能用 .g4（固定 4 列），否则第 5 个掉到第二行只占 1/4 宽 -->
-    <div class="stat-strip stat-strip-5">
+    <div class="stat-strip stat-strip-8">
       <button class="stat stat-btn" :class="{ 'is-on': filter === 'all' }" @click="filter = 'all'">
         <div class="k">全部账号</div>
         <div class="v">{{ stats.total }}</div>
@@ -455,6 +548,18 @@ onMounted(reload)
       <button class="stat stat-btn" :class="{ 'is-on': filter === 'failed' }" @click="filter = 'failed'">
         <div class="k">上次测试失败</div>
         <div class="v" :class="stats.failed ? 'bad' : ''">{{ stats.failed }}</div>
+      </button>
+      <button class="stat stat-btn" :class="{ 'is-on': filter === 'available' }" @click="filter = 'available'">
+        <div class="k">可用</div>
+        <div class="v ok">{{ stats.available }}</div>
+      </button>
+      <button class="stat stat-btn" :class="{ 'is-on': filter === 'rate_limited' }" @click="filter = 'rate_limited'">
+        <div class="k">限流中</div>
+        <div class="v" :class="stats.rateLimited ? 'warn' : ''">{{ stats.rateLimited }}</div>
+      </button>
+      <button class="stat stat-btn" :class="{ 'is-on': filter === 'banned' }" @click="filter = 'banned'">
+        <div class="k">封禁</div>
+        <div class="v" :class="stats.banned ? 'bad' : ''">{{ stats.banned }}</div>
       </button>
     </div>
   </section>
@@ -576,6 +681,7 @@ onMounted(reload)
             <th class="col-state">状态</th>
             <th class="col-group">分组</th>
             <th class="col-test">上次测试</th>
+            <th class="col-usage">用量/状态</th>
             <th class="col-time">创建</th>
             <th class="col-act">操作</th>
           </tr>
@@ -631,6 +737,19 @@ onMounted(reload)
               <span v-else class="note">未测试</span>
             </td>
 
+            <td class="col-usage">
+              <div class="usage-cell">
+                <span v-if="isBanned(a)" class="badge is-bad" :title="a.banned_reason || '封禁'">封禁</span>
+                <span v-else-if="isRateLimited(a)" class="badge is-warn" :title="`限流至 ${shortTime(a.rate_limit_reset_at)}`">限流</span>
+                <span v-else-if="a.quota" class="mono note" :title="usageTitle(a)">{{ usageBrief(a) }}</span>
+                <span v-else class="note">—</span>
+                <button class="icon-btn mini" :title="'查询用量'" :disabled="usageBusy === a.id" @click="queryUsage(a)">
+                  <svg v-if="usageBusy === a.id" class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 0 9 9"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 0 0 4.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 0 1-15.357-2m15.357 2H15"/></svg>
+                </button>
+              </div>
+            </td>
+
             <td class="col-time"><span class="note">{{ shortTime(a.created_at) }}</span></td>
 
             <td class="col-act">
@@ -672,6 +791,16 @@ onMounted(reload)
 </template>
 
 <style scoped>
+/* 用量/状态列 */
+.col-usage { width: 148px; }
+.usage-cell { display: flex; align-items: center; gap: 6px; }
+.usage-cell .badge { font-size: 10px; padding: 1px 7px; border-radius: 99px; font-weight: 700; }
+.usage-cell .badge.is-bad { color: #fff; background: #d33; }
+.usage-cell .badge.is-warn { color: #7a5b00; background: #ffd75e; }
+.icon-btn.mini { width: 20px; height: 20px; padding: 0; }
+.icon-btn.mini svg { width: 12px; height: 12px; }
+.spin { animation: uf-spin 0.8s linear infinite; }
+@keyframes uf-spin { to { transform: rotate(360deg); } }
 /* 入库实时进度面板（嵌在批量操作条里） */
 .imp {
   flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px;

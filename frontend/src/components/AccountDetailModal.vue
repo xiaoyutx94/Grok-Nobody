@@ -24,7 +24,8 @@ async function queryUsage() {
   usageError.value = ''
   usage.value = null
   try {
-    usage.value = await grok.fetchAccountUsage(acc.id, true)
+    const data = await grok.fetchAccountUsage(acc.id, true)
+    usage.value = { ...(data.billing || {}), ...(data.quota || {}) }
   } catch (e: any) {
     usageError.value = e?.response?.data?.error || e?.message || '用量查询失败'
   } finally {
@@ -217,6 +218,14 @@ const updatedAt = computed(() => (props.account?.updated_at || '').replace('T', 
             <div class="usage-row" v-if="usage.plan">
               <span class="usage-k">套餐</span><b>{{ usage.plan }}</b>
             </div>
+            <div class="usage-row" v-if="usage.tokens?.remaining != null || usage.tokens?.limit != null">
+              <span class="usage-k">Tokens</span>
+              <span class="mono">剩 {{ usage.tokens?.remaining ?? '?' }} / {{ usage.tokens?.limit ?? '?' }}<template v-if="usage.tokens?.reset_at">（重置 {{ usage.tokens.reset_at.slice(5, 16).replace('T', ' ') }}）</template></span>
+            </div>
+            <div class="usage-row" v-if="usage.requests?.remaining != null || usage.requests?.limit != null">
+              <span class="usage-k">请求</span>
+              <span class="mono">{{ usage.requests?.remaining ?? '?' }} / {{ usage.requests?.limit ?? '?' }}</span>
+            </div>
             <div class="usage-row" v-if="usage.period_type || usage.usage_percent != null">
               <span class="usage-k">周期</span>
               <b>{{ usage.period_type || '—' }}{{ usage.usage_percent != null ? ` · 已用 ${fmtPct(usage.usage_percent)}` : '' }}</b>
@@ -226,8 +235,15 @@ const updatedAt = computed(() => (props.account?.updated_at || '').replace('T', 
               <span class="mono">{{ (usage.period_start || '—').slice(0, 16) }} ~ {{ (usage.period_end || '—').slice(0, 16) }}</span>
             </div>
             <div class="usage-row" v-if="usage.monthly_limit_cents || usage.used_cents">
-              <span class="usage-k">月度</span>
+              <span class="usage-k">金额</span>
               <span class="mono">已用 ${{ ((usage.used_cents || 0) / 100).toFixed(2) }} / ${{ ((usage.monthly_limit_cents || 0) / 100).toFixed(2) }}</span>
+            </div>
+            <div class="usage-row" v-if="usage.retry_after_seconds">
+              <span class="usage-k">限流</span><b class="usage-warn">重置 {{ usage.retry_after_seconds }}s 后</b>
+            </div>
+            <div class="usage-row" v-if="usage.subscription_tier || usage.entitlement_status">
+              <span class="usage-k">订阅</span>
+              <span>{{ usage.subscription_tier || '' }}{{ usage.subscription_tier && usage.entitlement_status ? ' · ' : '' }}{{ usage.entitlement_status || '' }}</span>
             </div>
             <div class="usage-prods" v-if="usage.product_usage?.length">
               <div v-for="pu in usage.product_usage" :key="pu.product" class="usage-row">
@@ -235,8 +251,8 @@ const updatedAt = computed(() => (props.account?.updated_at || '').replace('T', 
                 <span v-if="pu.usage_percent != null">{{ fmtPct(pu.usage_percent) }}</span>
               </div>
             </div>
-            <div v-if="usage.used_percent != null" class="usage-row">
-              <span class="usage-k">已用</span><b>{{ fmtPct(usage.used_percent) }}</b>
+            <div v-if="usage.error_code || usage.error_message" class="usage-err">
+              额度信号：{{ usage.error_code || '' }} {{ usage.error_message || '' }}
             </div>
             <div v-if="usage.partial" class="usage-note">部分窗口查询失败（周/月任一不可用）</div>
           </div>

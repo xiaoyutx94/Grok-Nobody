@@ -44,12 +44,22 @@ type Account struct {
 	Status       string `json:"status"`
 	Imported     bool   `json:"imported"`
 	// GroupID/GroupName 网关分组归属（空 = 未分组，不参与网关账号路由）。
-	GroupID   string         `json:"group_id,omitempty"`
-	GroupName string         `json:"group_name,omitempty"`
-	Note      string         `json:"note,omitempty"`
-	CreatedAt string         `json:"created_at"`
-	UpdatedAt string         `json:"updated_at"`
-	Raw       map[string]any `json:"raw,omitempty"`
+	GroupID   string `json:"group_id,omitempty"`
+	GroupName string `json:"group_name,omitempty"`
+	Note      string `json:"note,omitempty"`
+	// 健康状态（网关自动换号依据；sub2api 同款语义）：
+	// BannedAt 非空 = 封禁（403 风控）；RateLimitResetAt 未来时间 = 限流中（429）；
+	// TempUnschedulable 未来时间 = 临时不可调度（网络错误冷却）。
+	BannedAt            string            `json:"banned_at,omitempty"`
+	BannedReason        string            `json:"banned_reason,omitempty"`
+	RateLimitResetAt    string            `json:"rate_limit_reset_at,omitempty"`
+	TempUnschedulable   string            `json:"temp_unschedulable_until,omitempty"`
+	Quota               *xai.QuotaSnapshot  `json:"quota,omitempty"`
+	Billing             *xai.BillingSummary `json:"billing,omitempty"`
+	UsageFetchedAt      string            `json:"usage_fetched_at,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	Raw          map[string]any `json:"raw,omitempty"`
 
 	// 单账号测试留痕（测试对话 / 凭证校验后写回，列表直接展示健康度）
 	LastTestAt     string `json:"last_test_at,omitempty"`
@@ -1114,27 +1124,73 @@ func (s *AccountService) ListModels(ctx context.Context, id string, useProxy boo
 	return models, nil
 }
 
-// FetchAccountUsage 查询账号用量（sub2api 同款 billing 探测）：
-// 周窗口 /billing?format=credits + 月窗口 /billing，带 CLI 身份头 + 账号代理出口。
-// 双窗口任一成功即返回合并摘要（partial 标记失败侧）。
-func (s *AccountService) FetchAccountUsage(ctx context.Context, id string, useProxy bool) (*xai.BillingSummary, error) {
+// FetchAccountUsage 查询账号用量（sub2api 同款探测）：
+// 1. billing：周 /billing?format=credits + 月 /billing（金额/额度）
+// 2. quota：最小对话请求观察 x-ratelimit-* 响应头（tokens/requests 剩余、限流）
+// 双通道带 CLI 身份头 + 账号代理出口；结果落库（列表/筛选/网关换号共用）。
+func (s *AccountService) FetchAccountUsage(ctx context.Context, id string, useProxy bool) (*xai.BillingSummary, *xai.QuotaSnapshot, error) {
 	acc, err := s.Get(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if strings.TrimSpace(acc.AccessToken) == "" {
-		return nil, fmt.Errorf("账号无 OAuth 凭证（未入库转换），无法查询用量")
+		return nil, nil, fmt.Errorf("账号无 OAuth 凭证（未入库转换），无法查询用量")
 	}
 	client, _, err := newAccountHTTPClient(&acc, useProxy, 30*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	weekly, wErr := fetchBillingOnce(client, &acc, true)
 	monthly, mErr := fetchBillingOnce(client, &acc, false)
 	if wErr != nil && mErr != nil {
-		return nil, fmt.Errorf("用量查询失败（周: %v；月: %v）", wErr, mErr)
+		return nil, nil, fmt.Errorf("用量查询失败（周: %v；月: %v）", wErr, mErr)
 	}
-	return xai.MergeBillingProbeResult(nil, weekly, monthly, wErr == nil, mErr == nil), nil
+	billing := xai.MergeBillingProbeResult(nil, weekly, monthly, wErr == nil, mErr == nil)
+	quota, qErr := probeQuotaOnce(client, &acc)
+	if qErr != nil && wErr != nil && mErr != nil {
+		return nil, nil, fmt.Errorf("用量与配额查询均失败: %v", qErr)
+	}
+	// 落库：billing/quota 快照 + 限流重置时间（429 时自动记录）
+	now := time.Now().UTC().Format(time.RFC3339)
+	patch := AccountPatch{
+		Billing:        billing,
+		Quota:          quota,
+		UsageFetchedAt: &now,
+	}
+	if quota != nil && quota.RetryAfterSeconds != nil && *quota.RetryAfterSeconds > 0 {
+		until := time.Now().UTC().Add(time.Duration(*quota.RetryAfterSeconds) * time.Second).Format(time.RFC3339)
+		patch.RateLimitResetAt = &until
+	} else if quota != nil && quota.StatusCode == 429 {
+		until := time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339)
+		patch.RateLimitResetAt = &until
+	}
+	_, _ = s.Update(ctx, id, patch)
+	return billing, quota, nil
+}
+
+// probeQuotaOnce 发一个最小对话请求观察 x-ratelimit-* 配额头。
+func probeQuotaOnce(client *http.Client, acc *Account) (*xai.QuotaSnapshot, error) {
+	base := strings.TrimRight(accountBaseURL(acc), "/")
+	payload := map[string]any{
+		"model":      DefaultTestModel,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+		"max_tokens": 1,
+	}
+	body, _ := json.Marshal(payload)
+	req, rerr := http.NewRequest(http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
+	if rerr != nil {
+		return nil, rerr
+	}
+	applyGrokCLIHeaders(req, acc.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return xai.ParseQuotaSnapshot(resp.Header, resp.StatusCode, "probe"), nil
 }
 
 func fetchBillingOnce(client *http.Client, acc *Account, weekly bool) (*xai.BillingSummary, error) {
@@ -1191,6 +1247,14 @@ type AccountPatch struct {
 	Imported  *bool   `json:"imported"`
 	GroupID   *string `json:"group_id"`
 	GroupName *string `json:"group_name"`
+	// 健康状态（网关自动换号依据；网关写、界面可手动改）
+	BannedAt           *string `json:"banned_at"`
+	BannedReason       *string `json:"banned_reason"`
+	RateLimitResetAt   *string `json:"rate_limit_reset_at"`
+	TempUnschedulable  *string `json:"temp_unschedulable_until"`
+	Quota              *xai.QuotaSnapshot  `json:"quota"`
+	Billing            *xai.BillingSummary `json:"billing"`
+	UsageFetchedAt     *string             `json:"usage_fetched_at"`
 }
 
 // Update 更新单账号字段（仅传入的字段生效）。
@@ -1246,6 +1310,27 @@ func (s *AccountService) Update(ctx context.Context, id string, patch AccountPat
 	}
 	if patch.GroupName != nil {
 		acc.GroupName = strings.TrimSpace(*patch.GroupName)
+	}
+	if patch.BannedAt != nil {
+		acc.BannedAt = strings.TrimSpace(*patch.BannedAt)
+	}
+	if patch.BannedReason != nil {
+		acc.BannedReason = strings.TrimSpace(*patch.BannedReason)
+	}
+	if patch.RateLimitResetAt != nil {
+		acc.RateLimitResetAt = strings.TrimSpace(*patch.RateLimitResetAt)
+	}
+	if patch.TempUnschedulable != nil {
+		acc.TempUnschedulable = strings.TrimSpace(*patch.TempUnschedulable)
+	}
+	if patch.Quota != nil {
+		acc.Quota = patch.Quota
+	}
+	if patch.Billing != nil {
+		acc.Billing = patch.Billing
+	}
+	if patch.UsageFetchedAt != nil {
+		acc.UsageFetchedAt = strings.TrimSpace(*patch.UsageFetchedAt)
 	}
 	acc.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.save(ctx, list); err != nil {

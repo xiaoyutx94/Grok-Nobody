@@ -1,24 +1,24 @@
 package xai
 
 import (
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// 用量/配额观察（复刻 sub2api 的 QuotaSnapshot 语义）：
+// xAI 在真实对话响应头里下发 x-ratelimit-* 配额（token/请求窗口），
+// 免费账号典型值：tokens 1,000,000（24h 滚动），requests 21。
+// 限流/额度耗尽信号：429 + Retry-After / x-ratelimit-reset，或响应体 error_code。
+
 const GrokFreeRolling24hTokenLimit int64 = 1_000_000
 
-var grokFreeRolling24hTokenLimits = map[int64]struct{}{
-	GrokFreeRolling24hTokenLimit: {},
-	2_000_000:                    {}, // Legacy Free limit observed before July 2026.
-}
-
+// IsGrokFreeRolling24hTokenLimit 判断是否为免费号 24h 滚动 token 配额。
 func IsGrokFreeRolling24hTokenLimit(limit int64) bool {
-	_, ok := grokFreeRolling24hTokenLimits[limit]
-	return ok
+	return limit == GrokFreeRolling24hTokenLimit || limit == 2_000_000 // 2M 为 2026-07 前的旧免费窗口
 }
 
+// QuotaWindow 一个配额窗口（requests 或 tokens）。
 type QuotaWindow struct {
 	Limit     *int64 `json:"limit,omitempty"`
 	Remaining *int64 `json:"remaining,omitempty"`
@@ -26,11 +26,12 @@ type QuotaWindow struct {
 	ResetAt   string `json:"reset_at,omitempty"`
 }
 
+// QuotaSnapshot 一次响应头观察的完整配额快照。
 type QuotaSnapshot struct {
-	Requests          *QuotaWindow      `json:"requests,omitempty"`
-	Tokens            *QuotaWindow      `json:"tokens,omitempty"`
-	// ErrorCode / ErrorMessage capture quota exhaustion signals that xAI puts
-	// in the response body instead of Retry-After / x-ratelimit-reset headers.
+	Requests *QuotaWindow `json:"requests,omitempty"`
+	Tokens   *QuotaWindow `json:"tokens,omitempty"`
+	// ErrorCode / ErrorMessage 捕获 xAI 放在响应体里的额度耗尽信号
+	// （而非 Retry-After / x-ratelimit-reset 头）。
 	ErrorCode         string            `json:"error_code,omitempty"`
 	ErrorMessage      string            `json:"error_message,omitempty"`
 	RetryAfterSeconds *int              `json:"retry_after_seconds,omitempty"`
@@ -41,157 +42,100 @@ type QuotaSnapshot struct {
 	HeadersObserved   bool              `json:"headers_observed"`
 	ObservationSource string            `json:"observation_source,omitempty"`
 	LastProbeAt       string            `json:"last_probe_at,omitempty"`
-	LastHeadersSeenAt string            `json:"last_headers_seen_at,omitempty"`
 	UpdatedAt         string            `json:"updated_at"`
 }
 
-func (s *QuotaSnapshot) HasObservedHeaders() bool {
-	if s == nil {
-		return false
-	}
-	return s.HeadersObserved ||
-		s.Requests != nil ||
-		s.Tokens != nil ||
-		s.RetryAfterSeconds != nil ||
-		s.SubscriptionTier != "" ||
-		s.EntitlementStatus != "" ||
-		len(s.Headers) > 0
-}
-
-var quotaHeaderAllowlist = []string{
-	"x-ratelimit-limit-requests",
-	"x-ratelimit-remaining-requests",
-	"x-ratelimit-reset-requests",
-	"x-ratelimit-limit-tokens",
-	"x-ratelimit-remaining-tokens",
-	"x-ratelimit-reset-tokens",
-	"retry-after",
-	"x-subscription-tier",
-	"xai-subscription-tier",
-	"x-entitlement-status",
-	"xai-entitlement-status",
-}
-
-func ParseQuotaHeaders(headers http.Header, statusCode int) *QuotaSnapshot {
-	return parseQuotaHeaders(headers, statusCode, "", false)
-}
-
-func ObserveQuotaHeaders(headers http.Header, statusCode int, source string) *QuotaSnapshot {
-	return parseQuotaHeaders(headers, statusCode, source, true)
-}
-
-func parseQuotaHeaders(headers http.Header, statusCode int, source string, keepEmpty bool) *QuotaSnapshot {
-	if headers == nil && !keepEmpty {
+// ParseQuotaSnapshot 从响应头解析配额快照（x-ratelimit-* / Retry-After / x-ratelimit-reset）。
+func ParseQuotaSnapshot(headers map[string][]string, statusCode int, source string) *QuotaSnapshot {
+	if len(headers) == 0 {
 		return nil
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	snapshot := &QuotaSnapshot{
-		Requests:          parseQuotaWindow(headers, "requests"),
-		Tokens:            parseQuotaWindow(headers, "tokens"),
+	snap := &QuotaSnapshot{
 		StatusCode:        statusCode,
-		Headers:           make(map[string]string),
-		ObservationSource: strings.TrimSpace(source),
-		UpdatedAt:         now,
+		ObservationSource: source,
+		HeadersObserved:   true,
+		Headers:           make(map[string]string, len(headers)),
+		LastProbeAt:       time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
-	if snapshot.ObservationSource == "active_probe" {
-		snapshot.LastProbeAt = now
-	}
-	if retryAfter := parseRetryAfter(headers.Get("retry-after")); retryAfter != nil {
-		snapshot.RetryAfterSeconds = retryAfter
-	}
-	snapshot.SubscriptionTier = firstHeader(headers, "xai-subscription-tier", "x-subscription-tier")
-	snapshot.EntitlementStatus = firstHeader(headers, "xai-entitlement-status", "x-entitlement-status")
-
-	for _, name := range quotaHeaderAllowlist {
-		if value := strings.TrimSpace(headers.Get(name)); value != "" {
-			snapshot.Headers[name] = value
+	for k, vs := range headers {
+		if len(vs) > 0 {
+			snap.Headers[strings.ToLower(k)] = vs[0]
 		}
 	}
-
-	if snapshot.Requests == nil &&
-		snapshot.Tokens == nil &&
-		snapshot.RetryAfterSeconds == nil &&
-		snapshot.SubscriptionTier == "" &&
-		snapshot.EntitlementStatus == "" &&
-		len(snapshot.Headers) == 0 {
-		if keepEmpty {
-			return snapshot
+	get := func(name string) string { return snap.Headers[strings.ToLower(name)] }
+	atoi := func(s string) *int64 {
+		if s == "" {
+			return nil
 		}
-		return nil
-	}
-	snapshot.HeadersObserved = true
-	snapshot.LastHeadersSeenAt = now
-	return snapshot
-}
-
-func parseQuotaWindow(headers http.Header, dimension string) *QuotaWindow {
-	window := &QuotaWindow{
-		Limit:     parseInt64Ptr(headers.Get("x-ratelimit-limit-" + dimension)),
-		Remaining: parseInt64Ptr(headers.Get("x-ratelimit-remaining-" + dimension)),
-	}
-	if reset := parseResetHeader(headers.Get("x-ratelimit-reset-" + dimension)); reset != nil {
-		window.ResetUnix = reset
-		window.ResetAt = time.Unix(*reset, 0).UTC().Format(time.RFC3339)
-	}
-	if window.Limit == nil && window.Remaining == nil && window.ResetUnix == nil {
-		return nil
-	}
-	return window
-}
-
-func parseResetHeader(raw string) *int64 {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	if value, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		if value > 1_000_000_000_000 {
-			value = value / 1000
+		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return nil
 		}
-		return &value
+		return &n
 	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		value := t.Unix()
-		return &value
-	}
-	return nil
-}
-
-func parseRetryAfter(raw string) *int {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	if value, err := strconv.Atoi(raw); err == nil {
-		return &value
-	}
-	if t, err := http.ParseTime(raw); err == nil {
-		seconds := int(time.Until(t).Seconds())
-		if seconds < 0 {
-			seconds = 0
+	atoi32 := func(s string) *int {
+		if s == "" {
+			return nil
 		}
-		return &seconds
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return nil
+		}
+		return &n
 	}
-	return nil
-}
 
-func parseInt64Ptr(raw string) *int64 {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return nil
-	}
-	return &value
-}
-
-func firstHeader(headers http.Header, names ...string) string {
-	for _, name := range names {
-		if value := strings.TrimSpace(headers.Get(name)); value != "" {
-			return value
+	// requests 窗口
+	if v := get("x-ratelimit-limit-requests"); v != "" {
+		snap.Requests = &QuotaWindow{Limit: atoi(v)}
+		if r := atoi(get("x-ratelimit-remaining-requests")); r != nil {
+			snap.Requests.Remaining = r
+		}
+		if rs := get("x-ratelimit-reset-requests"); rs != "" {
+			if sec := atoi(rs); sec != nil {
+				snap.Requests.ResetUnix = sec
+				snap.Requests.ResetAt = time.Now().UTC().Add(time.Duration(*sec) * time.Second).Format(time.RFC3339)
+			}
 		}
 	}
-	return ""
+	// tokens 窗口
+	if v := get("x-ratelimit-limit-tokens"); v != "" {
+		snap.Tokens = &QuotaWindow{Limit: atoi(v)}
+		if r := atoi(get("x-ratelimit-remaining-tokens")); r != nil {
+			snap.Tokens.Remaining = r
+		}
+		if rs := get("x-ratelimit-reset-tokens"); rs != "" {
+			if sec := atoi(rs); sec != nil {
+				snap.Tokens.ResetUnix = sec
+				snap.Tokens.ResetAt = time.Now().UTC().Add(time.Duration(*sec) * time.Second).Format(time.RFC3339)
+			}
+		}
+	}
+	// 限流
+	if ra := get("retry-after"); ra != "" {
+		snap.RetryAfterSeconds = atoi32(ra)
+	}
+	if rs := get("x-ratelimit-reset"); rs != "" {
+		if sec := atoi(rs); sec != nil && snap.RetryAfterSeconds == nil {
+			snap.RetryAfterSeconds = atoi32(rs)
+		}
+	}
+	return snap
+}
+
+// TokenRemainingPercent tokens 剩余百分比（0-100）。
+func (s *QuotaSnapshot) TokenRemainingPercent() float64 {
+	if s == nil || s.Tokens == nil || s.Tokens.Limit == nil || *s.Tokens.Limit <= 0 || s.Tokens.Remaining == nil {
+		return 100
+	}
+	pct := float64(*s.Tokens.Remaining) * 100 / float64(*s.Tokens.Limit)
+	if pct < 0 {
+		return 0
+	}
+	return pct
+}
+
+// IsRateLimited 是否处于限流（Retry-After 或 429 + reset）。
+func (s *QuotaSnapshot) IsRateLimited() bool {
+	return s != nil && s.RetryAfterSeconds != nil && *s.RetryAfterSeconds > 0
 }

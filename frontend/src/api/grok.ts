@@ -100,6 +100,10 @@ export const saveProxySettings = async (body: Partial<ProxySettings>) =>
   unwrap<ProxySettings>(await api.put('/api/v1/admin/grok-register/proxy-settings', body))
 export const fetchAccountUsage = async (id: string, useProxy = true) =>
   unwrap<any>(await api.get(`/api/v1/admin/grok-register/accounts/${id}/usage`, { params: { use_proxy: useProxy } }))
+export const banAccount = async (id: string, reason = '手动封禁') =>
+  unwrap(await api.post(`/api/v1/admin/grok-register/accounts/${id}/ban`, { reason }))
+export const unbanAccount = async (id: string) =>
+  unwrap(await api.post(`/api/v1/admin/grok-register/accounts/${id}/ban`, { unban: true }))
 
 export const listAccounts = async () => unwrap<any[]>(await api.get('/api/v1/admin/grok-register/accounts'))
 export const deleteAccounts = async (ids: string[]) => unwrap(await api.post('/api/v1/admin/grok-register/accounts/delete', { ids }))

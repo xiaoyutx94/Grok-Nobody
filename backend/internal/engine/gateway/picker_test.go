@@ -112,25 +112,30 @@ func TestPickerCooldownAndForbidden(t *testing.T) {
 	require.Equal(t, e2.Account.ID, got.Account.ID)
 	p.Release(got.Account.ID)
 
-	// 403 → 永久封禁；清空冷却后依然无可用（e1 永久封禁 + e2 冷却清空后仍可用？不对——只封 e2）
+	// 403 → 永久封禁；清空内存冷却后依然无可用（e1 落库限流 30min + e2 封禁）
 	p.RecordFailure(e2.Account.ID, 403, "forbidden")
 	p.mu.Lock()
 	p.cooldown = map[string]time.Time{}
 	p.mu.Unlock()
-	// e1 冷却已清 → e1 可用
-	got, err = p.Pick(ctx, "g1", nil)
-	require.NoError(t, err)
-	require.Equal(t, e1.Account.ID, got.Account.ID)
-	p.Release(got.Account.ID)
+	// e1 的 429 已落库 RateLimitResetAt（30min 持久化，重启保留）→ 同样不可用
+	_, err = p.Pick(ctx, "g1", nil)
+	require.Error(t, err, "e1 落库限流中 + e2 封禁 → 应无可用账号")
+	require.Contains(t, err.Error(), "无可用账号")
 
-	// e2 永久封禁 → 再取不会拿到 e2
-	p.mu.Lock()
-	p.cooldown = map[string]time.Time{}
-	p.mu.Unlock()
+	// 手动解除 e1 限流（模拟限流时间到/管理端解除）→ e1 恢复可用
+	svc := engine.NewAccountService(st)
+	empty := ""
+	_, err = svc.Update(ctx, e1.Account.ID, engine.AccountPatch{RateLimitResetAt: &empty})
+	require.NoError(t, err)
 	got, err = p.Pick(ctx, "g1", nil)
 	require.NoError(t, err)
-	require.Equal(t, e1.Account.ID, got.Account.ID, "封禁账号不应再被选中")
+	require.Equal(t, e1.Account.ID, got.Account.ID, "解除限流后 e1 应恢复可用")
 	p.Release(got.Account.ID)
+	// 落库封禁校验：e2 的 BannedAt 应已持久化
+	acc, err := svc.Get(ctx, e2.Account.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, acc.BannedAt, "403 应落库 BannedAt")
+	require.NotEmpty(t, acc.BannedReason)
 }
 
 func TestPickerProxyRotation(t *testing.T) {
