@@ -28,7 +28,7 @@
 
 - 真机：`Chromium 150.0.7871.114 (snap, headless=new)` → `2026-07-19-chromium-150-linux-x64-real.json`
 - Go 客户端：`azuretls chrome 模板，UA 声称 Chrome 150` → `2026-07-19-go-chrome-linux-x64-observed.json`
-- EzSolver 节点：本机 `:8192` 与 ARM `151.145.76.6:8192` 均为 `sub2api-ezsolver/4`（协议 v4，未升 v5）；节点浏览器为 Chromium 150。
+- EzSolver 节点：本机 `:8192` 为 `sub2api-ezsolver/4`（协议 v4，未升 v5）；节点浏览器为 Chromium 150。
 
 ### 对比结论（决定 transport 与 profile 状态）
 

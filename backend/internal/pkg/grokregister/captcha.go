@@ -734,10 +734,11 @@ func ezSolverURLs(cfg EzSolverConfig, opts CaptchaOptions) []string {
 		}
 	}
 	if len(out) == 0 {
-		return []string{DefaultEzSolverURL, DefaultRemoteEzSolverURL}
+		return []string{DefaultEzSolverURL}
 	}
 	// Auto dual applies only to legacy URL-only settings. Node selections are explicit.
-	if !hasEnabledNode && allLocalEzSolverHosts(out) {
+	// 仅当配置了远程节点（非源码默认）时才附加；默认不再自动挂远程。
+	if !hasEnabledNode && allLocalEzSolverHosts(out) && strings.TrimSpace(DefaultRemoteEzSolverURL) != "" {
 		remote := strings.TrimRight(DefaultRemoteEzSolverURL, "/")
 		key := strings.ToLower(remote)
 		if _, ok := seen[key]; !ok {

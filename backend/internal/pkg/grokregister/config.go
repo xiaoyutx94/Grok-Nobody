@@ -44,12 +44,12 @@ const DefaultAuralithURL = "http://172.18.0.1:8194"
 // DefaultEzSolverURL matches Kiro free solver (loopback; Docker uses 172.18.0.1).
 const DefaultEzSolverURL = "http://127.0.0.1:8192"
 
-// DefaultRemoteEzSolverURL is the free ARM EzSolver used as dual-path failover.
-// Local Chrome often hard-timeouts under CF load; ARM is tried next automatically.
-const DefaultRemoteEzSolverURL = "http://151.145.76.6:8192"
+// DefaultRemoteEzSolverURL 历史默认值曾是用户的 ARM 服务器地址（定制残留）——
+// 桌面版没有默认远程打码节点，远程地址应由用户显式配置，源码不再写死。
+const DefaultRemoteEzSolverURL = ""
 
-// DefaultDualEzSolverURL is local Docker gateway + ARM free solvers.
-const DefaultDualEzSolverURL = "http://172.18.0.1:8192,http://151.145.76.6:8192"
+// DefaultDualEzSolverURL 同上：本地 Docker 网关 + 远程的组合默认值不再内置。
+const DefaultDualEzSolverURL = ""
 
 // SetCaptchaRuntime updates process-wide captcha defaults used by SolveTurnstile*.
 func SetCaptchaRuntime(c CaptchaRuntime) {
