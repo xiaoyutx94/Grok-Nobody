@@ -25,6 +25,7 @@ const msgs = ref<Msg[]>([])
 const streaming = ref(false)
 const thinkingOpen = ref<Record<number, boolean>>({})
 const scrollBox = ref<HTMLElement | null>(null)
+const inputEl = ref<HTMLTextAreaElement | null>(null)
 let aborter: AbortController | null = null
 
 // 思考等级：同步官方（reasoning_efforts id 原样），无则回落官方 CLI 值域（id 原样）
@@ -193,6 +194,42 @@ function stop() {
   aborter?.abort()
 }
 
+// ---------- 消息操作：复制 / 编辑重发 ----------
+const copyDone = ref<Record<number, boolean>>({})
+async function copyMsg(i: number) {
+  const m = msgs.value[i]
+  if (!m) return
+  try {
+    await navigator.clipboard.writeText(m.content || m.thinking || '')
+    copyDone.value[i] = true
+    setTimeout(() => (copyDone.value[i] = false), 2000)
+  } catch {
+    /* 剪贴板不可用时静默 */
+  }
+}
+
+// 编辑重发：回填输入框 + 截断该条及之后（重新生成）
+const editIdx = ref(-1)
+function editMsg(i: number) {
+  const m = msgs.value[i]
+  if (!m || streaming.value) return
+  editIdx.value = i
+  input.value = m.content
+  images.value = [...m.images]
+  msgs.value = msgs.value.slice(0, i)
+  thinkingOpen.value = {}
+  scrollBox.value?.scrollTo({ top: scrollBox.value.scrollHeight })
+  nextTick(() => {
+    inputEl.value?.focus()
+    autoGrow({ target: inputEl.value } as any)
+  })
+}
+function cancelEdit() {
+  editIdx.value = -1
+  input.value = ''
+  images.value = []
+}
+
 async function scroll() {
   await nextTick()
   scrollBox.value?.scrollTo({ top: scrollBox.value.scrollHeight })
@@ -222,6 +259,16 @@ function autoGrow(e: Event) {
       </div>
 
       <div v-for="(m, i) in msgs" :key="i" class="msg" :class="'is-' + m.role">
+        <!-- 操作条：复制 / 编辑重发（hover 显示） -->
+        <div class="msg-ops">
+          <button class="op-btn" :class="{ 'is-done': copyDone[i] }" title="复制" @click="copyMsg(i)">
+            <span v-if="copyDone[i]" class="op-ok">✓</span>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+          <button v-if="m.role === 'user'" class="op-btn" title="编辑后重发" @click="editMsg(i)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+        </div>
         <!-- 用户附件图片 -->
         <div v-if="m.images.length" class="attach">
           <img v-for="(img, ii) in m.images" :key="ii" :src="img" class="attach-img" alt="attachment" />
@@ -241,17 +288,19 @@ function autoGrow(e: Event) {
           </div>
         </div>
 
-        <!-- 思考（折叠） -->
-        <div v-if="m.thinking" class="thinking">
+        <!-- 思考（折叠；streaming 且开启思考时始终显示占位，避免等待期无反馈） -->
+        <div v-if="m.thinking || (i === msgs.length - 1 && streaming && effort !== 'none')" class="thinking" :class="{ 'is-live': !m.thinking }">
           <button class="think-head" @click="thinkingOpen[i] = !thinkingOpen[i]">
             <span>{{ thinkingOpen[i] ? '▾' : '▸' }}</span>
-            <span>思考过程 · {{ m.thinking.length }} 字</span>
+            <span>{{ m.thinking ? `思考过程 · ${m.thinking.length} 字` : '思考中…' }}</span>
+            <span v-if="!m.thinking" class="think-dots"><i></i><i></i><i></i></span>
           </button>
-          <div v-if="thinkingOpen[i]" class="think-body">{{ m.thinking }}</div>
+          <div v-if="thinkingOpen[i] && m.thinking" class="think-body">{{ m.thinking }}</div>
         </div>
 
-        <!-- 正文（markdown 格式化渲染） -->
-        <div v-if="m.content" class="content" v-html="renderMd(m.content)"></div>
+        <!-- 正文：assistant 用 markdown 格式化；用户消息原样显示（不段落化，单行就是单行） -->
+        <div v-if="m.role === 'assistant' && m.content" class="content" v-html="renderMd(m.content)"></div>
+        <div v-else-if="m.role === 'user' && m.content" class="content user-content">{{ m.content }}</div>
         <div v-if="m.error" class="error">{{ m.error }}</div>
         <div v-if="i === msgs.length - 1 && streaming" class="cursor">▋</div>
       </div>
@@ -287,10 +336,14 @@ function autoGrow(e: Event) {
       </div>
 
       <div class="input-row">
-        <textarea v-model="input" rows="1" class="input" placeholder="输入消息…（Enter 发送 / Shift+Enter 换行 / 可直接粘贴图片）"
-          :disabled="streaming" @keydown.enter.exact.prevent="send" @paste="onPaste" @input="autoGrow" />
+        <textarea ref="inputEl" v-model="input" rows="1" class="input" :placeholder="editIdx >= 0 ? '修改后 Enter 重发…（Esc 取消）' : '输入消息…（Enter 发送 / Shift+Enter 换行 / 可直接粘贴图片）'"
+          :disabled="streaming" @keydown.enter.exact.prevent="send" @keydown.esc="cancelEdit" @paste="onPaste" @input="autoGrow" />
         <button v-if="streaming" class="send-btn stop" title="停止" @click="stop">■</button>
         <button v-else class="send-btn" :disabled="!input.trim() && !images.length" title="发送" @click="send">↑</button>
+      </div>
+      <div v-if="editIdx >= 0" class="edit-tag">
+        正在编辑上一条消息
+        <button class="edit-x" @click="cancelEdit">✕ 取消</button>
       </div>
     </div>
   </div>
@@ -304,9 +357,28 @@ function autoGrow(e: Event) {
 .empty { margin: auto; text-align: center; color: var(--muted); max-width: 560px; }
 .examples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
 
-.msg { display: flex; flex-direction: column; gap: 6px; max-width: 92%; }
+.msg { display: flex; flex-direction: column; gap: 6px; max-width: 92%; position: relative; }
 .msg.is-user { align-self: flex-end; }
 .msg.is-assistant { align-self: flex-start; width: 100%; }
+/* 消息操作条（hover 显示） */
+.msg-ops { position: absolute; top: -6px; right: 2px; display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; z-index: 3; }
+.msg:hover .msg-ops { opacity: 1; }
+.op-btn { width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.op-btn:hover { color: var(--ink); border-color: var(--ink-3); }
+.op-btn.is-done { color: var(--ok, #16a34a); border-color: var(--ok, #16a34a); }
+.op-btn svg { width: 13px; height: 13px; }
+.op-ok { font-size: 13px; font-weight: 800; }
+/* 用户消息：原样显示（单行就是单行，不 markdown 段落化） */
+.user-content { background: color-mix(in srgb, var(--accent, #c2410c) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #c2410c) 22%, transparent); border-radius: 12px; padding: 8px 12px; }
+/* 思考占位动画 */
+.thinking.is-live .think-dots { display: inline-flex; gap: 3px; margin-left: 6px; }
+.think-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: td 1.2s infinite; }
+.think-dots i:nth-child(2) { animation-delay: 0.2s; }
+.think-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes td { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
+/* 编辑态标签 */
+.edit-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--accent, #c2410c); margin-top: 6px; }
+.edit-x { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 11px; text-decoration: underline; }
 .content { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 13.5px; }
 .content :deep(h1), .content :deep(h2), .content :deep(h3) { margin: 10px 0 4px; font-size: 15px; line-height: 1.4; }
 .content :deep(p) { margin: 4px 0; }
