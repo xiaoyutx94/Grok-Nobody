@@ -1037,7 +1037,9 @@ func (e *RegisterEngine) run(parent context.Context, cfg Config, in StartInput, 
 						if ssoRw == "" {
 							ssoRw = sso
 						}
-						proxy, _ := full["proxy"].(string)
+						// 注册代理（registration_proxy 由 batch 在 OnResult 后清除；
+						// 入库转换必须走同一出口，否则直连 x.ai 被 DNS 污染拦截）
+						proxy := strFrom(full, "proxy", "registration_proxy")
 						useProxy := strings.TrimSpace(proxy) != "" && cfg.ImportProxyMode != "direct"
 						if useProxy && !strings.Contains(proxy, "://") {
 							useProxy = false

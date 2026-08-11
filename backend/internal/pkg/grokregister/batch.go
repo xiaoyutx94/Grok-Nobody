@@ -1015,9 +1015,11 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 					if opts.OnSuccess != nil {
 						opts.OnSuccess(result)
 					}
-					// Internal handoff only. Never persist or expose a raw proxy URL (it may contain credentials).
-					delete(result, "registration_proxy")
 					report(email, "", "")
+					// Internal handoff only. Never persist or expose a raw proxy URL (it may contain credentials).
+					// 注意：必须在 OnResult 之后删除——engine 自动入库（SSO→OAuth 转换）
+					// 需要读 registration_proxy 走同出口代理，删除过早会导致转换直连 x.ai
+					// 被 DNS 污染拦截（lookup accounts.x.ai: no such host），入库成功率腰斩。
 				} else if isUserCancelledStatus(st, errMsgForProxy) {
 					// Stop/teardown must not inflate fail counters or look like "本亏".
 					errMsg, _ := result["error"].(string)
@@ -1042,6 +1044,8 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 				if opts.OnResult != nil {
 					opts.OnResult(result)
 				}
+				// 注册代理只传递给 OnResult（自动入库转换用），此后立即清除防持久化
+				delete(result, "registration_proxy")
 			}
 		}(w)
 	}
