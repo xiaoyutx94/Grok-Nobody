@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/umbraforge/desktop/internal/engine"
 	"github.com/umbraforge/desktop/internal/store"
-	"github.com/stretchr/testify/require"
 )
 
 func newTestStore(t *testing.T) *store.JSONStore {
@@ -38,7 +38,7 @@ func TestPickerPickFiltersByGroupAndToken(t *testing.T) {
 	seedAccounts(t, st, []engine.Account{
 		{Email: "a@x.com", AccessToken: "tok-a", GroupID: "g1", GroupName: "组1"},
 		{Email: "b@x.com", AccessToken: "tok-b", GroupID: "g1", GroupName: "组1"},
-		{Email: "c@x.com", AccessToken: "", GroupID: "g1", GroupName: "组1"},   // 无 token 不可用
+		{Email: "c@x.com", AccessToken: "", GroupID: "g1", GroupName: "组1"},      // 无 token 不可用
 		{Email: "d@x.com", AccessToken: "tok-d", GroupID: "g2", GroupName: "组2"}, // 其他分组
 	})
 	p := NewAccountPicker(engine.NewAccountService(st))
@@ -312,4 +312,46 @@ func TestGatewayConfigListenHost(t *testing.T) {
 	require.NoError(t, gs.SetConfig(ctx, GatewayConfig{Enabled: true, Port: 18789}))
 	cfg, _ = gs.GetConfig(ctx)
 	require.Equal(t, DefaultListenHost, cfg.ListenHost)
+}
+
+func TestPickerStickySession(t *testing.T) {
+	st := newTestStore(t)
+	seedAccounts(t, st, []engine.Account{
+		{Email: "a@x.com", AccessToken: "tok-a", GroupID: "g1", GroupName: "组1"},
+		{Email: "b@x.com", AccessToken: "tok-b", GroupID: "g1", GroupName: "组1"},
+	})
+	p := NewAccountPicker(engine.NewAccountService(st))
+	ctx := context.Background()
+
+	// 同一会话两次 → 同一账号（粘性）
+	e1, err := p.PickWithSession(ctx, "g1", nil, "conv-1")
+	require.NoError(t, err)
+	p.Release(e1.Account.ID)
+	e2, err := p.PickWithSession(ctx, "g1", nil, "conv-1")
+	require.NoError(t, err)
+	require.Equal(t, e1.Account.ID, e2.Account.ID, "同会话应固定账号")
+	p.Release(e2.Account.ID)
+
+	// 不同会话 → 允许不同账号（负载感知选最闲，两个都 idle 时可能同号，不强制断言不同，
+	// 但会话 2 至少应成功且绑定独立）
+	e3, err := p.PickWithSession(ctx, "g1", nil, "conv-2")
+	require.NoError(t, err)
+	require.NotEmpty(t, e3.Account.ID)
+	p.Release(e3.Account.ID)
+
+	// 绑定账号被封（403 落库）→ 粘性失效自动换号
+	svc := engine.NewAccountService(st)
+	now := time.Now().UTC().Format(time.RFC3339)
+	reason := "test"
+	_, err = svc.Update(ctx, e1.Account.ID, engine.AccountPatch{BannedAt: &now, BannedReason: &reason})
+	require.NoError(t, err)
+	e4, err := p.PickWithSession(ctx, "g1", nil, "conv-1")
+	require.NoError(t, err)
+	require.NotEqual(t, e1.Account.ID, e4.Account.ID, "绑定账号封禁后应换号")
+	p.Release(e4.Account.ID)
+	// 换号后新绑定应生效：再取同一会话 → e4
+	e5, err := p.PickWithSession(ctx, "g1", nil, "conv-1")
+	require.NoError(t, err)
+	require.Equal(t, e4.Account.ID, e5.Account.ID, "换号后会话应绑定新账号")
+	p.Release(e5.Account.ID)
 }

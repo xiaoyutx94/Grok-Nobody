@@ -30,11 +30,24 @@ const (
 type AccountPicker struct {
 	mu      sync.Mutex
 	accts   *engine.AccountService
-	running map[string]int          // accountID → 当前并发
-	cooldown map[string]time.Time   // accountID → 冷却截止
-	forbidden map[string]bool       // accountID → 403 永久封禁
+	running map[string]int        // accountID → 当前并发
+	cooldown map[string]time.Time // accountID → 冷却截止
+	forbidden map[string]bool     // accountID → 403 永久封禁
 	roundRobin int
+	// 粘性会话（sub2api BindStickySession 语义）：会话哈希 → 账号绑定，
+	// 多轮对话固定同一账号（上下文连续 + 上游 prompt 缓存命中）。
+	sticky  map[string]stickyBind
+	stickyN int // 绑定计数，触发过期清理
 }
+
+// stickyBind 会话绑定：账号 + 最近活动时间。
+type stickyBind struct {
+	AccountID string
+	At        time.Time
+}
+
+// StickySessionTTL 会话绑定期限（无活动自动释放，防账号被长期独占）。
+const StickySessionTTL = 30 * time.Minute
 
 func NewAccountPicker(accts *engine.AccountService) *AccountPicker {
 	return &AccountPicker{
@@ -42,6 +55,7 @@ func NewAccountPicker(accts *engine.AccountService) *AccountPicker {
 		running:   map[string]int{},
 		cooldown:  map[string]time.Time{},
 		forbidden: map[string]bool{},
+		sticky:    map[string]stickyBind{},
 	}
 }
 
@@ -52,8 +66,42 @@ type AccountEntry struct {
 	Proxy string
 }
 
+// accountHealthy 判定账号当前是否可调度（内存 + 落库健康状态 + quota 额度）。
+// 持锁调用。
+func (p *AccountPicker) accountHealthy(acc engine.Account, now time.Time) bool {
+	if strings.TrimSpace(acc.AccessToken) == "" {
+		return false // 无 OAuth 凭证不可用
+	}
+	// 落库健康状态（sub2api schedulable 语义）：封禁 / 限流中 / 临时不可调度一律跳过
+	if acc.BannedAt != "" {
+		return false
+	}
+	if until, err := time.Parse(time.RFC3339, acc.RateLimitResetAt); err == nil && now.Before(until) {
+		return false
+	}
+	if until, err := time.Parse(time.RFC3339, acc.TempUnschedulable); err == nil && now.Before(until) {
+		return false
+	}
+	// quota 额度耗尽自动跳过（sub2api shouldAutoPauseGrokAccountByQuota 语义：
+	// tokens 剩余 0 的账号不参与选号，直到配额刷新）
+	if acc.Quota != nil && acc.Quota.Tokens != nil && acc.Quota.Tokens.Remaining != nil && *acc.Quota.Tokens.Remaining <= 0 {
+		return false
+	}
+	if p.forbidden[acc.ID] {
+		return false // 403 永久封禁（内存）
+	}
+	if until, bad := p.cooldown[acc.ID]; bad && now.Before(until) {
+		return false
+	}
+	if p.running[acc.ID] >= MaxAccountConcurrency {
+		return false // 单账号并发上限
+	}
+	return true
+}
+
 // Pick 从分组中选择一个可用账号；无可选账号返回错误。
 // groupID 为 AllAccountsGroupID（__all__）时从全部账号池选择（不做分组约束）。
+// 负载感知：候选账号按当前并发升序取最闲的（sub2api SelectAccount 语义）。
 // proxies 为分组绑定的代理列表（空 = 直连），每次调用轮询取一个出口。
 func (p *AccountPicker) Pick(ctx context.Context, groupID string, proxies []string) (AccountEntry, error) {
 	list, err := p.accts.List(ctx)
@@ -70,27 +118,8 @@ func (p *AccountPicker) Pick(ctx context.Context, groupID string, proxies []stri
 		if !all && acc.GroupID != groupID {
 			continue
 		}
-		if strings.TrimSpace(acc.AccessToken) == "" {
-			continue // 无 OAuth 凭证不可用
-		}
-		// 落库健康状态（与内存状态合并）：封禁 / 限流中 / 临时不可调度一律跳过
-		if acc.BannedAt != "" {
+		if !p.accountHealthy(acc, now) {
 			continue
-		}
-		if until, err := time.Parse(time.RFC3339, acc.RateLimitResetAt); err == nil && now.Before(until) {
-			continue
-		}
-		if until, err := time.Parse(time.RFC3339, acc.TempUnschedulable); err == nil && now.Before(until) {
-			continue
-		}
-		if p.forbidden[acc.ID] {
-			continue // 403 永久封禁（内存）
-		}
-		if until, bad := p.cooldown[acc.ID]; bad && now.Before(until) {
-			continue
-		}
-		if p.running[acc.ID] >= MaxAccountConcurrency {
-			continue // 单账号并发上限
 		}
 		candidates = append(candidates, acc)
 	}
@@ -100,16 +129,74 @@ func (p *AccountPicker) Pick(ctx context.Context, groupID string, proxies []stri
 		return AccountEntry{}, errNoAccount(groupID)
 	}
 
-	// 轮询 + 随机抖动：起点随机，按 roundRobin 顺序取，避免固定顺序抢同一个账号。
+	// 负载感知：选当前并发最低的账号（并发相同保持轮询起点随机，避免扎堆）
 	start := p.roundRobin % len(candidates)
 	p.roundRobin++
-	acc := candidates[start]
+	best := candidates[start]
+	bestLoad := p.running[best.ID]
+	for i := 1; i < len(candidates); i++ {
+		idx := (start + i) % len(candidates)
+		load := p.running[candidates[idx].ID]
+		if load < bestLoad {
+			best = candidates[idx]
+			bestLoad = load
+		}
+	}
 
-	p.running[acc.ID]++
+	p.running[best.ID]++
 	p.mu.Unlock()
 
-	proxy := pickProxy(proxies, acc.Proxy)
-	return AccountEntry{Account: acc, Proxy: proxy}, nil
+	proxy := pickProxy(proxies, best.Proxy)
+	return AccountEntry{Account: best, Proxy: proxy}, nil
+}
+
+// PickWithSession 带粘性会话的选号（sub2api BindStickySession 语义）：
+// 同一会话哈希优先复用已绑定账号（多轮对话上下文连续）；绑定失效
+// （封禁/限流/额度耗尽/并发满）自动释放并换号。无会话 ID 时等同 Pick。
+func (p *AccountPicker) PickWithSession(ctx context.Context, groupID string, proxies []string, sessionID string) (AccountEntry, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return p.Pick(ctx, groupID, proxies)
+	}
+	now := time.Now()
+	p.mu.Lock()
+	if b, ok := p.sticky[sessionID]; ok {
+		// 找绑定账号并检查健康度
+		list, err := p.accts.List(ctx)
+		if err != nil {
+			p.mu.Unlock()
+			return AccountEntry{}, err
+		}
+		for i := range list {
+			if list[i].ID == b.AccountID && p.accountHealthy(list[i], now) {
+				p.running[list[i].ID]++
+				b.At = now
+				p.sticky[sessionID] = b
+				p.mu.Unlock()
+				proxy := pickProxy(proxies, list[i].Proxy)
+				return AccountEntry{Account: list[i], Proxy: proxy}, nil
+			}
+		}
+		// 绑定失效（账号被封/限流/额度耗尽）→ 释放走正常选号
+		delete(p.sticky, sessionID)
+	}
+	// 过期清理（每 50 次绑定扫一次）
+	p.stickyN++
+	if p.stickyN%50 == 0 {
+		for k, b := range p.sticky {
+			if now.Sub(b.At) > StickySessionTTL {
+				delete(p.sticky, k)
+			}
+		}
+	}
+	p.mu.Unlock()
+
+	entry, err := p.Pick(ctx, groupID, proxies)
+	if err == nil {
+		p.mu.Lock()
+		p.sticky[sessionID] = stickyBind{AccountID: entry.Account.ID, At: time.Now()}
+		p.mu.Unlock()
+	}
+	return entry, nil
 }
 
 // Release 请求结束释放账号并发槽（defer 调用）。

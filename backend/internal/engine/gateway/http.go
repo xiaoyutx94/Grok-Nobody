@@ -45,7 +45,8 @@ func (g *GatewayService) routes() *gin.Engine {
 // resolveTarget 按 Key 分组解析：分组 → 服务 → 可用账号。
 // 调用方负责 picker.Release。
 // groupID 为 AllAccountsGroupID 时跳过分组查询（全账号池 + 默认 grok 反代服务）。
-func (g *GatewayService) resolveTarget(c *gin.Context) (GatewayGroup, UpstreamService, AccountEntry, error) {
+// sessionID 非空时走粘性会话选号（多轮对话固定账号，sub2api BindStickySession 语义）。
+func (g *GatewayService) resolveTarget(c *gin.Context, sessionID string) (GatewayGroup, UpstreamService, AccountEntry, error) {
 	groupID := c.GetString("gw_group_id")
 	ctx := c.Request.Context()
 	group := GatewayGroup{ID: groupID, ServiceID: DefaultServiceID}
@@ -63,7 +64,7 @@ func (g *GatewayService) resolveTarget(c *gin.Context) (GatewayGroup, UpstreamSe
 	if !svc.Enabled {
 		return GatewayGroup{}, UpstreamService{}, AccountEntry{}, fmt.Errorf("服务已禁用: %s", svc.Name)
 	}
-	entry, err := g.picker.Pick(ctx, group.ID, group.ProxyIDs)
+	entry, err := g.picker.PickWithSession(ctx, group.ID, group.ProxyIDs, sessionID)
 	if err != nil {
 		return GatewayGroup{}, UpstreamService{}, AccountEntry{}, err
 	}
@@ -97,6 +98,18 @@ func upstreamPath(urlPath string) string {
 	return strings.TrimPrefix(urlPath, "/v1")
 }
 
+// sessionIDFromRequest 提取粘性会话 ID（sub2api explicitOpenAIRequestSessionID 语义）：
+// 官方 grok CLI 会话头 X-Grok-Conv-Id 优先 → OpenAI 通用会话头兜底。
+// 会话哈希用于多轮对话固定同一账号（上下文连续 + 上游 prompt 缓存命中）。
+func sessionIDFromRequest(c *gin.Context) string {
+	for _, h := range []string{"X-Grok-Conv-Id", "session_id", "conversation_id", "x-session-id"} {
+		if v := strings.TrimSpace(c.GetHeader(h)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // handleForward OpenAI 协议统一处理（responses / chat completions）。
 func (g *GatewayService) handleForward(proto string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -109,7 +122,7 @@ func (g *GatewayService) handleForward(proto string) gin.HandlerFunc {
 		body = ensureModel(body)
 		stream := requestStream(body)
 
-		group, svc, entry, err := g.resolveTarget(c)
+		group, svc, entry, err := g.resolveTarget(c, sessionIDFromRequest(c))
 		if err != nil {
 			writeOpenAIError(c, http.StatusServiceUnavailable, err.Error())
 			return
@@ -214,7 +227,7 @@ func (g *GatewayService) handleModels() gin.HandlerFunc {
 		seen := map[string]bool{}
 		var models []map[string]any
 		for i := 0; i < 3 && len(seen) < 8; i++ {
-			_, svc, entry, err := g.resolveTarget(c)
+			_, svc, entry, err := g.resolveTarget(c, "")
 			if err != nil {
 				break
 			}

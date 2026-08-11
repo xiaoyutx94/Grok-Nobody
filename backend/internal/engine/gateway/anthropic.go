@@ -44,7 +44,7 @@ func (g *GatewayService) handleMessages() gin.HandlerFunc {
 			return
 		}
 
-		group, svc, entry, err := g.resolveTarget(c)
+		group, svc, entry, err := g.resolveTarget(c, sessionIDFromRequest(c))
 		if err != nil {
 			writeAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", err.Error())
 			return
