@@ -1063,6 +1063,10 @@ func (e *RegisterEngine) run(parent context.Context, cfg Config, in StartInput, 
 							}
 						}
 						convMS := time.Since(convStart).Milliseconds()
+						proxyNote := "直连"
+						if useProxy {
+							proxyNote = "走注册代理"
+						}
 						if cerr == nil && tok != nil {
 							full["access_token"] = tok.AccessToken
 							full["refresh_token"] = tok.RefreshToken
@@ -1071,7 +1075,7 @@ func (e *RegisterEngine) run(parent context.Context, cfg Config, in StartInput, 
 							full["expires_in"] = tok.ExpiresIn
 							full["imported"] = true
 							e.recordAutoImport(email, true, "", convMS)
-							e.appendLog(fmt.Sprintf("[自动入库] %s 转换成功 → 已入库（%.1fs）", email, float64(convMS)/1000))
+							e.appendLog(fmt.Sprintf("[自动入库] %s 转换成功 → 已入库（%.1fs，%s）", email, float64(convMS)/1000, proxyNote))
 						} else if cfg.ImportRemoveOnFail {
 							// 重试超限仍失败 → 自动清除该账号（默认行为；可关）
 							full["imported"] = false
