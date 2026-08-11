@@ -224,8 +224,32 @@ func (g *GatewayService) HandleChat(c *gin.Context) {
 		}
 
 		var fc *chatFunctionCall
+		var imgB64 string // 累积中的图片 base64（response.output_image.delta）
+		sendImage := func(b64 string) {
+			imgB64 = ""
+			if b64 == "" {
+				return
+			}
+			mime := "image/png"
+			if strings.HasPrefix(b64, "/9j/") {
+				mime = "image/jpeg"
+			}
+			sendChatEvent(c, "image_delta", map[string]any{"data_url": "data:" + mime + ";base64," + b64})
+		}
+		handleImagePart := func(part gjson.Result) bool {
+			// part: {"type":"output_image","image_url":...} 或 {"type":"output_image","b64_json":...}
+			if u := part.Get("image_url").String(); u != "" {
+				sendChatEvent(c, "image_delta", map[string]any{"data_url": u})
+				return true
+			}
+			if b := part.Get("b64_json").String(); b != "" {
+				sendImage(b)
+				return true
+			}
+			return false
+		}
 		scanner := bufio.NewScanner(res.Body)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") {
@@ -244,6 +268,15 @@ func (g *GatewayService) HandleChat(c *gin.Context) {
 				sendChatEvent(c, "thinking_delta", map[string]any{"text": gjson.Get(data, "delta").String()})
 			case "response.output_text.delta":
 				sendChatEvent(c, "text_delta", map[string]any{"text": gjson.Get(data, "delta").String()})
+			case "response.output_image.delta":
+				imgB64 += gjson.Get(data, "delta").String()
+			case "response.output_image.done":
+				// 完整图片：优先 image_url / b64_json，其次累积的 delta b64
+				if it := gjson.Get(data, "part"); it.Exists() && handleImagePart(it) {
+					// 已发送
+				} else if imgB64 != "" {
+					sendImage(imgB64)
+				}
 			case "response.output_item.added":
 				if it := gjson.Get(data, "item"); it.Exists() {
 					typ := it.Get("type").String()
@@ -266,9 +299,21 @@ func (g *GatewayService) HandleChat(c *gin.Context) {
 				if fc != nil {
 					fc.Args += gjson.Get(data, "delta").String()
 				}
+			case "response.content_part.done":
+				if part := gjson.Get(data, "part"); part.Exists() && part.Get("type").String() == "output_image" {
+					handleImagePart(part)
+				}
 			case "response.output_item.done":
 				if it := gjson.Get(data, "item"); it.Exists() {
 					typ := it.Get("type").String()
+					// 图片输出：item.content[] 里的 output_image part
+					if typ == "message" {
+						for _, part := range it.Get("content").Array() {
+							if part.Get("type").String() == "output_image" {
+								handleImagePart(part)
+							}
+						}
+					}
 					switch {
 					case strings.Contains(typ, "search"):
 						summary := it.Get("search.query").String()

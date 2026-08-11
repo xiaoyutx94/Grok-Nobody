@@ -10,6 +10,7 @@ interface Msg {
   tools: { name: string; status: string; detail?: string }[]
   toolResults: { name: string; output: string }[]
   images: string[]
+  imagesOut: string[] // 模型生成的图片（data URL）
   error?: string
   account?: string
 }
@@ -124,8 +125,8 @@ function onPaste(e: ClipboardEvent) {
 async function send() {
   const text = input.value.trim()
   if ((!text && !images.value.length) || streaming.value) return
-  msgs.value.push({ role: 'user', content: text, thinking: '', tools: [], toolResults: [], images: [...images.value] })
-  const cur: Msg = { role: 'assistant', content: '', thinking: '', tools: [], toolResults: [], images: [] }
+  msgs.value.push({ role: 'user', content: text, thinking: '', tools: [], toolResults: [], images: [...images.value], imagesOut: [] })
+  const cur: Msg = { role: 'assistant', content: '', thinking: '', tools: [], toolResults: [], images: [], imagesOut: [] }
   msgs.value.push(cur)
   const idx = msgs.value.length - 1
   input.value = ''
@@ -161,6 +162,9 @@ async function send() {
           break
         case 'text_delta':
           cur.content += d.text
+          break
+        case 'image_delta':
+          cur.imagesOut.push(d.data_url)
           break
         case 'tool_call':
           if (d.status === 'start') cur.tools.push({ name: d.name, status: 'start' })
@@ -228,6 +232,11 @@ function cancelEdit() {
   editIdx.value = -1
   input.value = ''
   images.value = []
+}
+
+// 点击生成的图片 → 新窗口打开
+function openImage(url: string) {
+  window.open(url, '_blank')
 }
 
 async function scroll() {
@@ -301,6 +310,10 @@ function autoGrow(e: Event) {
         <!-- 正文：assistant 用 markdown 格式化；用户消息原样显示（不段落化，单行就是单行） -->
         <div v-if="m.role === 'assistant' && m.content" class="content" v-html="renderMd(m.content)"></div>
         <div v-else-if="m.role === 'user' && m.content" class="content user-content">{{ m.content }}</div>
+        <!-- 模型生成的图片（output_image） -->
+        <div v-if="m.imagesOut.length" class="gen-images">
+          <img v-for="(img, ii) in m.imagesOut" :key="ii" :src="img" class="gen-img" alt="generated" @click="openImage(img)" />
+        </div>
         <div v-if="m.error" class="error">{{ m.error }}</div>
         <div v-if="i === msgs.length - 1 && streaming" class="cursor">▋</div>
       </div>
@@ -379,6 +392,9 @@ function autoGrow(e: Event) {
 /* 编辑态标签 */
 .edit-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--accent, #c2410c); margin-top: 6px; }
 .edit-x { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 11px; text-decoration: underline; }
+/* 模型生成的图片 */
+.gen-images { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.gen-img { max-width: 320px; max-height: 320px; border-radius: 12px; border: 1px solid var(--line); cursor: zoom-in; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08); }
 .content { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 13.5px; }
 .content :deep(h1), .content :deep(h2), .content :deep(h3) { margin: 10px 0 4px; font-size: 15px; line-height: 1.4; }
 .content :deep(p) { margin: 4px 0; }

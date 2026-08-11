@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -326,4 +327,51 @@ func TestEnsureDefaultsCreatesInternalKey(t *testing.T) {
 	found, err := gs.GetKeyBySecret(ctx, key)
 	require.NoError(t, err)
 	require.Equal(t, AllAccountsGroupID, found.GroupID)
+}
+
+func TestChatImageOutput(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		ev := func(j string) {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", j)
+		}
+		ev(`{"type":"response.created"}`)
+		ev(`{"type":"response.in_progress"}`)
+		// 分块图片（官方 output_image.delta 格式）
+		ev(`{"type":"response.output_image.delta","delta":"iVBORw0KGgoAAAANSUhEUg"}`)
+		ev(`{"type":"response.output_image.delta","delta":"AAAA=="}`)
+		ev(`{"type":"response.output_image.done","part":{"type":"output_image","image_url":""}}`)
+		ev(`{"type":"response.completed","response":{"status":"completed","id":"r_1"}}`)
+	}))
+	defer upstream.Close()
+
+	st := newTestStore(t)
+	svc := NewGatewayService(st, engine.NewAccountService(st))
+	ctx := context.Background()
+	require.NoError(t, svc.Store().EnsureDefaults(ctx))
+	svcs, _ := svc.Store().listServices(ctx)
+	for i := range svcs {
+		svcs[i].BaseURL = upstream.URL + "/v1"
+	}
+	require.NoError(t, svc.Store().save(ctx, KeyServices, svcs))
+	_, err := engine.NewAccountService(st).UpsertFromResult(ctx, map[string]any{
+		"email": "img@x.com", "access_token": "tok-img",
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/v1/admin/gateway/chat", bytes.NewReader([]byte(
+		`{"model":"grok-4.5","effort":"medium","message":"画一只猫"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = req
+	svc.HandleChat(ginCtx)
+	require.Equal(t, 200, rec.Code)
+
+	body := rec.Body.String()
+	require.Contains(t, body, "image_delta", "应输出图片事件")
+	require.Contains(t, body, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA==", "b64 分块应累积合并为完整 data URL")
+	require.Contains(t, body, "done")
 }
