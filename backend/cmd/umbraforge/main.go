@@ -101,6 +101,14 @@ func main() {
 		api.Plugins.AutoStartLocalBundled()
 	}()
 
+	// 打码引擎卡死自愈：引擎「活着但空转」（浏览器/worker 占满、solved 不增长，
+	// 新请求 503 high-water）时自动 Stop + Install 重启，清理进程与浏览器池。
+	// 启动延迟 20s，避开引擎启动窗口的误判。
+	go func() {
+		time.Sleep(20 * time.Second)
+		api.Plugins.StartEngineWatchdog()
+	}()
+
 	// 启动 Grok 反代网关（默认 127.0.0.1:18789，失败仅告警不退出）
 	if addr, running, gerr := gw.Start(context.Background()); gerr != nil {
 		log.Printf("[gateway] 启动失败: %v", gerr)
