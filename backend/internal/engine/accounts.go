@@ -1,24 +1,24 @@
 package engine
 
 import (
-        "bufio"
-        "bytes"
-        "context"
-        "encoding/json"
-        "fmt"
-        "io"
-        "net/http"
-        neturl "net/url"
-        "sort"
-        "strings"
-        "sync"
-        "time"
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	neturl "net/url"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
-        "github.com/google/uuid"
-        "github.com/umbraforge/desktop/internal/pkg/grokregister"
-        "github.com/umbraforge/desktop/internal/pkg/proxyurl"
-        "github.com/umbraforge/desktop/internal/pkg/xai"
-        "github.com/umbraforge/desktop/internal/store"
+	"github.com/google/uuid"
+	"github.com/umbraforge/desktop/internal/pkg/grokregister"
+	"github.com/umbraforge/desktop/internal/pkg/proxyurl"
+	"github.com/umbraforge/desktop/internal/pkg/xai"
+	"github.com/umbraforge/desktop/internal/store"
 )
 
 const KeyAccounts = "grok_register_accounts"
@@ -26,195 +26,195 @@ const KeyProxyPool = "grok_register_proxy_pool"
 
 // Account is a successful registration retained with full credentials.
 type Account struct {
-        ID           string `json:"id"`
-        Email        string `json:"email"`
-        Password     string `json:"password,omitempty"`
-        SSO          string `json:"sso,omitempty"`
-        SSORW        string `json:"sso_rw,omitempty"`
-        AccessToken  string `json:"access_token,omitempty"`
-        RefreshToken string `json:"refresh_token,omitempty"`
-        IDToken      string `json:"id_token,omitempty"`
-        TokenType    string `json:"token_type,omitempty"`
-        ExpiresIn    any    `json:"expires_in,omitempty"`
-        OAuthScope   string `json:"oauth_scope,omitempty"`
-        BaseURL      string `json:"base_url,omitempty"`
-        Browser      string `json:"browser,omitempty"`
-        OS           string `json:"os,omitempty"`
-        Proxy        string `json:"proxy,omitempty"`
-        Status       string `json:"status"`
-        Imported     bool   `json:"imported"`
-        // GroupID/GroupName 网关分组归属（空 = 未分组，不参与网关账号路由）。
-        GroupID   string `json:"group_id,omitempty"`
-        GroupName string `json:"group_name,omitempty"`
-        Note      string `json:"note,omitempty"`
-        CreatedAt    string `json:"created_at"`
-        UpdatedAt    string `json:"updated_at"`
-        Raw          map[string]any `json:"raw,omitempty"`
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	Password     string `json:"password,omitempty"`
+	SSO          string `json:"sso,omitempty"`
+	SSORW        string `json:"sso_rw,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
+	TokenType    string `json:"token_type,omitempty"`
+	ExpiresIn    any    `json:"expires_in,omitempty"`
+	OAuthScope   string `json:"oauth_scope,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
+	Browser      string `json:"browser,omitempty"`
+	OS           string `json:"os,omitempty"`
+	Proxy        string `json:"proxy,omitempty"`
+	Status       string `json:"status"`
+	Imported     bool   `json:"imported"`
+	// GroupID/GroupName 网关分组归属（空 = 未分组，不参与网关账号路由）。
+	GroupID   string         `json:"group_id,omitempty"`
+	GroupName string         `json:"group_name,omitempty"`
+	Note      string         `json:"note,omitempty"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt string         `json:"updated_at"`
+	Raw       map[string]any `json:"raw,omitempty"`
 
-        // 单账号测试留痕（测试对话 / 凭证校验后写回，列表直接展示健康度）
-        LastTestAt     string `json:"last_test_at,omitempty"`
-        LastTestStatus string `json:"last_test_status,omitempty"` // ok | fail
-        LastTestError  string `json:"last_test_error,omitempty"`
-        LastTestMs     int64  `json:"last_test_ms,omitempty"`
-        LastTestModel  string `json:"last_test_model,omitempty"`
+	// 单账号测试留痕（测试对话 / 凭证校验后写回，列表直接展示健康度）
+	LastTestAt     string `json:"last_test_at,omitempty"`
+	LastTestStatus string `json:"last_test_status,omitempty"` // ok | fail
+	LastTestError  string `json:"last_test_error,omitempty"`
+	LastTestMs     int64  `json:"last_test_ms,omitempty"`
+	LastTestModel  string `json:"last_test_model,omitempty"`
 }
 
 type ProxyEntry struct {
-        URL     string `json:"url"`
-        Note    string `json:"note,omitempty"`
-        Enabled bool   `json:"enabled"`
-        // Source 条目来源。空 = 用户手动添加；ProxySourceWarp = WARP 实例自动并入。
-        //
-        // 需要这个字段是因为 WARP 出口的生命周期由容器决定，不该被代理池页删除：
-        // 删了条目容器还在跑，用户会以为已经移除。前端据此禁用删除并打标记，
-        // 真正的移除走 WARP 页删容器（会同步清掉这里的条目）。
-        Source string `json:"source,omitempty"`
+	URL     string `json:"url"`
+	Note    string `json:"note,omitempty"`
+	Enabled bool   `json:"enabled"`
+	// Source 条目来源。空 = 用户手动添加；ProxySourceWarp = WARP 实例自动并入。
+	//
+	// 需要这个字段是因为 WARP 出口的生命周期由容器决定，不该被代理池页删除：
+	// 删了条目容器还在跑，用户会以为已经移除。前端据此禁用删除并打标记，
+	// 真正的移除走 WARP 页删容器（会同步清掉这里的条目）。
+	Source string `json:"source,omitempty"`
 }
 
 // ProxySourceWarp 标记「该条目由 WARP 实例自动并入」。
 const ProxySourceWarp = "warp"
 
 type ProxyPool struct {
-        // URLs: 兼容旧数据 + 注册引擎消费（仅启用条目）。新数据以 Entries 为准。
-        URLs    []string     `json:"urls"`
-        Entries []ProxyEntry `json:"entries,omitempty"`
+	// URLs: 兼容旧数据 + 注册引擎消费（仅启用条目）。新数据以 Entries 为准。
+	URLs    []string     `json:"urls"`
+	Entries []ProxyEntry `json:"entries,omitempty"`
 }
 
 // ProxySettings holds independent proxy routing for registration / captcha / import.
 type ProxySettings struct {
-        // Registration pool (Grok register egress)
-        RegisterURLs []string `json:"register_urls"`
-        // Captcha free-solver egress only
-        CaptchaMode string   `json:"captcha_mode"` // direct|registration|global|selected
-        CaptchaURLs []string `json:"captcha_urls"`
-        // Import / convert egress only
-        ImportMode string   `json:"import_mode"` // direct|registration|global|selected
-        ImportURLs []string `json:"import_urls"`
+	// Registration pool (Grok register egress)
+	RegisterURLs []string `json:"register_urls"`
+	// Captcha free-solver egress only
+	CaptchaMode string   `json:"captcha_mode"` // direct|registration|global|selected
+	CaptchaURLs []string `json:"captcha_urls"`
+	// Import / convert egress only
+	ImportMode string   `json:"import_mode"` // direct|registration|global|selected
+	ImportURLs []string `json:"import_urls"`
 }
 
 const KeyProxySettings = "grok_register_proxy_settings"
 
 type AccountService struct {
-        store *store.JSONStore
-        mu    sync.Mutex
-        // importProg 入库转换的实时进度（见 import_progress.go）。
-        // 转换是分钟级操作，必须能被前端轮询，否则界面只能干等。
-        importProg *importProgressTracker
+	store *store.JSONStore
+	mu    sync.Mutex
+	// importProg 入库转换的实时进度（见 import_progress.go）。
+	// 转换是分钟级操作，必须能被前端轮询，否则界面只能干等。
+	importProg *importProgressTracker
 }
 
 func NewAccountService(st *store.JSONStore) *AccountService {
-        return &AccountService{store: st, importProg: &importProgressTracker{}}
+	return &AccountService{store: st, importProg: &importProgressTracker{}}
 }
 
 func (s *AccountService) List(ctx context.Context) ([]Account, error) {
-        s.mu.Lock()
-        defer s.mu.Unlock()
-        return s.load(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.load(ctx)
 }
 
 func (s *AccountService) load(ctx context.Context) ([]Account, error) {
-        raw, err := s.store.GetValue(ctx, KeyAccounts)
-        if err != nil {
-                return nil, err
-        }
-        if strings.TrimSpace(raw) == "" {
-                return []Account{}, nil
-        }
-        var list []Account
-        if err := json.Unmarshal([]byte(raw), &list); err != nil {
-                return nil, err
-        }
-        sort.SliceStable(list, func(i, j int) bool { return list[i].CreatedAt > list[j].CreatedAt })
-        return list, nil
+	raw, err := s.store.GetValue(ctx, KeyAccounts)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return []Account{}, nil
+	}
+	var list []Account
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].CreatedAt > list[j].CreatedAt })
+	return list, nil
 }
 
 func (s *AccountService) save(ctx context.Context, list []Account) error {
-        b, err := json.Marshal(list)
-        if err != nil {
-                return err
-        }
-        return s.store.Set(ctx, KeyAccounts, string(b))
+	b, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	return s.store.Set(ctx, KeyAccounts, string(b))
 }
 
 func strFrom(m map[string]any, keys ...string) string {
-        for _, k := range keys {
-                if v, ok := m[k]; ok {
-                        switch t := v.(type) {
-                        case string:
-                                if strings.TrimSpace(t) != "" {
-                                        return t
-                                }
-                        }
-                }
-        }
-        return ""
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch t := v.(type) {
+			case string:
+				if strings.TrimSpace(t) != "" {
+					return t
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // UpsertFromResult saves a successful registration result with full secrets.
 func (s *AccountService) UpsertFromResult(ctx context.Context, result map[string]any) (Account, error) {
-        s.mu.Lock()
-        defer s.mu.Unlock()
-        list, err := s.load(ctx)
-        if err != nil {
-                return Account{}, err
-        }
-        now := time.Now().UTC().Format(time.RFC3339)
-        email := strFrom(result, "email")
-        sso := strFrom(result, "sso", "sso_token", "key")
-        importedFlag, hasImportFlag := result["imported"].(bool)
-        acc := Account{
-                ID:           uuid.NewString(),
-                Email:        email,
-                Password:     strFrom(result, "password"),
-                Imported:     importedFlag,
-                SSO:          sso,
-                SSORW:        strFrom(result, "sso_rw", "sso-rw"),
-                AccessToken:  strFrom(result, "access_token"),
-                RefreshToken: strFrom(result, "refresh_token"),
-                IDToken:      strFrom(result, "id_token"),
-                TokenType:    strFrom(result, "token_type"),
-                ExpiresIn:    result["expires_in"],
-                OAuthScope:   strFrom(result, "oauth_scope"),
-                BaseURL:      strFrom(result, "base_url"),
-                Browser:      strFrom(result, "browser"),
-                OS:           strFrom(result, "os"),
-                Proxy:        strFrom(result, "proxy", "registration_proxy"),
-                Status:       strFrom(result, "status"),
-                GroupID:      strFrom(result, "group_id"),
-                GroupName:    strFrom(result, "group_name"),
-                CreatedAt:    now,
-                UpdatedAt:    now,
-                Raw:          result,
-        }
-        if acc.Status == "" {
-                acc.Status = "success"
-        }
-        // 注册回填时钉住 CLI 网关：免费账号只有 grok-cli:access，
-        // 空 base_url 会让后续调用落到 api.x.ai 被判无额度 402。
-        if strings.TrimSpace(acc.BaseURL) == "" {
-                acc.BaseURL = xai.DefaultCLIBaseURL
-        }
-        // dedupe by email+sso
-        for i, old := range list {
-                if (email != "" && strings.EqualFold(old.Email, email)) || (sso != "" && old.SSO == sso) {
-                        acc.ID = old.ID
-                        acc.CreatedAt = old.CreatedAt
-                        if !hasImportFlag {
-                                acc.Imported = old.Imported
-                        }
-                        acc.Note = old.Note
-                        // 保留测试留痕：重复注册/回填不应清掉既有健康度
-                        acc.LastTestAt = old.LastTestAt
-                        acc.LastTestStatus = old.LastTestStatus
-                        acc.LastTestError = old.LastTestError
-                        acc.LastTestMs = old.LastTestMs
-                        acc.LastTestModel = old.LastTestModel
-                        list[i] = acc
-                        return acc, s.save(ctx, list)
-                }
-        }
-        list = append(list, acc)
-        return acc, s.save(ctx, list)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load(ctx)
+	if err != nil {
+		return Account{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	email := strFrom(result, "email")
+	sso := strFrom(result, "sso", "sso_token", "key")
+	importedFlag, hasImportFlag := result["imported"].(bool)
+	acc := Account{
+		ID:           uuid.NewString(),
+		Email:        email,
+		Password:     strFrom(result, "password"),
+		Imported:     importedFlag,
+		SSO:          sso,
+		SSORW:        strFrom(result, "sso_rw", "sso-rw"),
+		AccessToken:  strFrom(result, "access_token"),
+		RefreshToken: strFrom(result, "refresh_token"),
+		IDToken:      strFrom(result, "id_token"),
+		TokenType:    strFrom(result, "token_type"),
+		ExpiresIn:    result["expires_in"],
+		OAuthScope:   strFrom(result, "oauth_scope"),
+		BaseURL:      strFrom(result, "base_url"),
+		Browser:      strFrom(result, "browser"),
+		OS:           strFrom(result, "os"),
+		Proxy:        strFrom(result, "proxy", "registration_proxy"),
+		Status:       strFrom(result, "status"),
+		GroupID:      strFrom(result, "group_id"),
+		GroupName:    strFrom(result, "group_name"),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Raw:          result,
+	}
+	if acc.Status == "" {
+		acc.Status = "success"
+	}
+	// 注册回填时钉住 CLI 网关：免费账号只有 grok-cli:access，
+	// 空 base_url 会让后续调用落到 api.x.ai 被判无额度 402。
+	if strings.TrimSpace(acc.BaseURL) == "" {
+		acc.BaseURL = xai.DefaultCLIBaseURL
+	}
+	// dedupe by email+sso
+	for i, old := range list {
+		if (email != "" && strings.EqualFold(old.Email, email)) || (sso != "" && old.SSO == sso) {
+			acc.ID = old.ID
+			acc.CreatedAt = old.CreatedAt
+			if !hasImportFlag {
+				acc.Imported = old.Imported
+			}
+			acc.Note = old.Note
+			// 保留测试留痕：重复注册/回填不应清掉既有健康度
+			acc.LastTestAt = old.LastTestAt
+			acc.LastTestStatus = old.LastTestStatus
+			acc.LastTestError = old.LastTestError
+			acc.LastTestMs = old.LastTestMs
+			acc.LastTestModel = old.LastTestModel
+			list[i] = acc
+			return acc, s.save(ctx, list)
+		}
+	}
+	list = append(list, acc)
+	return acc, s.save(ctx, list)
 }
 
 func (s *AccountService) Delete(ctx context.Context, ids []string) (int, error) {
@@ -264,86 +264,86 @@ func (s *AccountService) DeleteByEmail(ctx context.Context, email string) (bool,
 }
 
 func (s *AccountService) Clear(ctx context.Context) error {
-        s.mu.Lock()
-        defer s.mu.Unlock()
-        return s.save(ctx, []Account{})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.save(ctx, []Account{})
 }
 
 // ProxyTestResult 单条代理检测结果。
 type ProxyTestResult struct {
-        URL       string `json:"url"`
-        OK        bool   `json:"ok"`
-        IP        string `json:"ip,omitempty"`
-        LatencyMs int64  `json:"latency_ms"`
-        Error     string `json:"error,omitempty"`
+	URL       string `json:"url"`
+	OK        bool   `json:"ok"`
+	IP        string `json:"ip,omitempty"`
+	LatencyMs int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
 }
 
 // TestProxyPool 并发检测代理可用性（复用注册引擎同一套探测逻辑）。
 func TestProxyPool(ctx context.Context, urls []string) []ProxyTestResult {
-        results := make([]ProxyTestResult, 0, len(urls))
-        if len(urls) == 0 {
-                return results
-        }
-        var wg sync.WaitGroup
-        sem := make(chan struct{}, 8)
-        mu := sync.Mutex{}
-        for _, u := range urls {
-                u = strings.TrimSpace(u)
-                if u == "" {
-                        continue
-                }
-                wg.Add(1)
-                go func(proxyURL string) {
-                        defer wg.Done()
-                        sem <- struct{}{}
-                        defer func() { <-sem }()
-                        start := time.Now()
-                        ip, ok := grokregister.TestProxyAlive(proxyURL)
-                        r := ProxyTestResult{URL: proxyURL, OK: ok, IP: ip, LatencyMs: time.Since(start).Milliseconds()}
-                        if !ok {
-                                r.Error = "连接/出口检测失败"
-                        }
-                        mu.Lock()
-                        results = append(results, r)
-                        mu.Unlock()
-                }(u)
-        }
-        wg.Wait()
-        // 保持输入顺序
-        order := map[string]ProxyTestResult{}
-        for _, r := range results {
-                order[r.URL] = r
-        }
-        ordered := make([]ProxyTestResult, 0, len(urls))
-        for _, u := range urls {
-                if r, ok := order[strings.TrimSpace(u)]; ok {
-                        ordered = append(ordered, r)
-                }
-        }
-        return ordered
+	results := make([]ProxyTestResult, 0, len(urls))
+	if len(urls) == 0 {
+		return results
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	mu := sync.Mutex{}
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(proxyURL string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			start := time.Now()
+			ip, ok := grokregister.TestProxyAlive(proxyURL)
+			r := ProxyTestResult{URL: proxyURL, OK: ok, IP: ip, LatencyMs: time.Since(start).Milliseconds()}
+			if !ok {
+				r.Error = "连接/出口检测失败"
+			}
+			mu.Lock()
+			results = append(results, r)
+			mu.Unlock()
+		}(u)
+	}
+	wg.Wait()
+	// 保持输入顺序
+	order := map[string]ProxyTestResult{}
+	for _, r := range results {
+		order[r.URL] = r
+	}
+	ordered := make([]ProxyTestResult, 0, len(urls))
+	for _, u := range urls {
+		if r, ok := order[strings.TrimSpace(u)]; ok {
+			ordered = append(ordered, r)
+		}
+	}
+	return ordered
 }
 
 func (s *AccountService) MarkImported(ctx context.Context, ids []string, imported bool) (int, error) {
-        s.mu.Lock()
-        defer s.mu.Unlock()
-        list, err := s.load(ctx)
-        if err != nil {
-                return 0, err
-        }
-        set := map[string]struct{}{}
-        for _, id := range ids {
-                set[id] = struct{}{}
-        }
-        n := 0
-        now := time.Now().UTC().Format(time.RFC3339)
-        for i := range list {
-                if _, ok := set[list[i].ID]; ok || len(ids) == 0 {
-                        list[i].Imported = imported
-                        list[i].UpdatedAt = now
-                        n++
-                }
-        }
-        return n, s.save(ctx, list)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load(ctx)
+	if err != nil {
+		return 0, err
+	}
+	set := map[string]struct{}{}
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	n := 0
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range list {
+		if _, ok := set[list[i].ID]; ok || len(ids) == 0 {
+			list[i].Imported = imported
+			list[i].UpdatedAt = now
+			n++
+		}
+	}
+	return n, s.save(ctx, list)
 }
 
 // Export formats:
@@ -352,375 +352,401 @@ func (s *AccountService) MarkImported(ctx context.Context, ids []string, importe
 // - newapi: newline text type/name/credentials blocks for new-api import style
 // - full: email----password----sso----sso_rw----access_token----refresh_token
 // - csv: header csv
-func (s *AccountService) Export(ctx context.Context, format string, successOnly bool) (string, string, error) {
-        list, err := s.List(ctx)
-        if err != nil {
-                return "", "", err
-        }
-        rows := make([]Account, 0, len(list))
-        for _, a := range list {
-                if successOnly && !strings.EqualFold(a.Status, "success") {
-                        continue
-                }
-                rows = append(rows, a)
-        }
-        switch strings.ToLower(strings.TrimSpace(format)) {
-        case "", "json":
-                b, err := json.MarshalIndent(rows, "", "  ")
-                return string(b), "application/json", err
-        case "sub2api":
-                // sub2api「导入数据」认的完整授权包（含 OAuth 凭证 + 注册代理）。
-                // 旧实现只导 {"sso_tokens":[...]}，缺 proxies/accounts 两个数组，
-                // 前端 isValidDataPayload 直接判格式错误。
-                b, err := json.MarshalIndent(buildSub2APIBundle(rows, true), "", "  ")
-                return string(b), "application/json", err
-        case "sub2api-noproxy":
-                // 同上，但不带代理（对端自己配出口时用）
-                b, err := json.MarshalIndent(buildSub2APIBundle(rows, false), "", "  ")
-                return string(b), "application/json", err
-        case "sub2api-sso":
-                // 旧行为保留：纯 SSO 列表，一行一个，贴进 sub2api 的
-                // 「批量添加账号 → SSO」输入框（对端会重新做 SSO→OAuth 转换）
-                var b strings.Builder
-                for _, a := range rows {
-                        if s := strings.TrimSpace(a.SSO); s != "" {
-                                b.WriteString(s)
-                                b.WriteByte('\n')
-                        }
-                }
-                return b.String(), "text/plain", nil
-        case "newapi", "new-api":
-                // new-api 渠道数组（xAI type=48）。旧实现导的是自造 NDJSON，
-                // new-api 没有任何入口能吃。这里带 header_override 注入 CLI 身份头，
-                // 否则 new-api 只发 Authorization: Bearer 会被 CLI 网关判 426。
-                channels := buildNewAPIChannels(rows)
-                b, err := json.MarshalIndent(channels, "", "  ")
-                return string(b), "application/json", err
-        case "full", "txt":
-                var b strings.Builder
-                for _, a := range rows {
-                        // complete email----password----sso----sso_rw----access_token----refresh_token
-                        b.WriteString(strings.Join([]string{
-                                a.Email, a.Password, a.SSO, a.SSORW, a.AccessToken, a.RefreshToken,
-                        }, "----"))
-                        b.WriteByte('\n')
-                }
-                return b.String(), "text/plain", nil
-        case "csv":
-                var b strings.Builder
-                b.WriteString("email,password,sso,sso_rw,access_token,refresh_token,status,proxy,created_at\n")
-                for _, a := range rows {
-                        b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-                                csvEsc(a.Email), csvEsc(a.Password), csvEsc(a.SSO), csvEsc(a.SSORW),
-                                csvEsc(a.AccessToken), csvEsc(a.RefreshToken), csvEsc(a.Status), csvEsc(a.Proxy), csvEsc(a.CreatedAt)))
-                }
-                return b.String(), "text/csv", nil
-        default:
-                return "", "", fmt.Errorf("unknown format: %s (json|sub2api|sub2api-noproxy|sub2api-sso|newapi|full|csv)", format)
-        }
+// 返回 (内容, mime, 导出条数, error)——条数供导出文件名带数量。
+func (s *AccountService) Export(ctx context.Context, format string, successOnly bool) (string, string, int, error) {
+	list, err := s.List(ctx)
+	if err != nil {
+		return "", "", 0, err
+	}
+	rows := make([]Account, 0, len(list))
+	for _, a := range list {
+		if successOnly && !strings.EqualFold(a.Status, "success") {
+			continue
+		}
+		rows = append(rows, a)
+	}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "json":
+		b, err := json.MarshalIndent(rows, "", "  ")
+		return string(b), "application/json", len(rows), err
+	case "sub2api":
+		// sub2api「导入数据」认的完整授权包（含 OAuth 凭证 + 注册代理）。
+		// 旧实现只导 {"sso_tokens":[...]}，缺 proxies/accounts 两个数组，
+		// 前端 isValidDataPayload 直接判格式错误。
+		b, err := json.MarshalIndent(buildSub2APIBundle(rows, true), "", "  ")
+		return string(b), "application/json", len(rows), err
+	case "sub2api-noproxy":
+		// 同上，但不带代理（对端自己配出口时用）
+		b, err := json.MarshalIndent(buildSub2APIBundle(rows, false), "", "  ")
+		return string(b), "application/json", len(rows), err
+	case "sub2api-sso":
+		// 旧行为保留：纯 SSO 列表，一行一个，贴进 sub2api 的
+		// 「批量添加账号 → SSO」输入框（对端会重新做 SSO→OAuth 转换）
+		var b strings.Builder
+		for _, a := range rows {
+			if s := strings.TrimSpace(a.SSO); s != "" {
+				b.WriteString(s)
+				b.WriteByte('\n')
+			}
+		}
+		return b.String(), "text/plain", len(rows), nil
+	case "newapi", "new-api":
+		// new-api 渠道数组（xAI type=48）。旧实现导的是自造 NDJSON，
+		// new-api 没有任何入口能吃。这里带 header_override 注入 CLI 身份头，
+		// 否则 new-api 只发 Authorization: Bearer 会被 CLI 网关判 426。
+		channels := buildNewAPIChannels(rows)
+		b, err := json.MarshalIndent(channels, "", "  ")
+		return string(b), "application/json", len(rows), err
+	case "full", "txt":
+		var b strings.Builder
+		for _, a := range rows {
+			// complete email----password----sso----sso_rw----access_token----refresh_token
+			b.WriteString(strings.Join([]string{
+				a.Email, a.Password, a.SSO, a.SSORW, a.AccessToken, a.RefreshToken,
+			}, "----"))
+			b.WriteByte('\n')
+		}
+		return b.String(), "text/plain", len(rows), nil
+	case "csv":
+		var b strings.Builder
+		b.WriteString("email,password,sso,sso_rw,access_token,refresh_token,status,proxy,created_at\n")
+		for _, a := range rows {
+			b.WriteString(fmt.Sprintf("%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+				csvEsc(a.Email), csvEsc(a.Password), csvEsc(a.SSO), csvEsc(a.SSORW),
+				csvEsc(a.AccessToken), csvEsc(a.RefreshToken), csvEsc(a.Status), csvEsc(a.Proxy), csvEsc(a.CreatedAt)))
+		}
+		return b.String(), "text/csv", len(rows), nil
+	default:
+		return "", "", 0, fmt.Errorf("unknown format: %s (json|sub2api|sub2api-noproxy|sub2api-sso|newapi|full|csv)", format)
+	}
+}
+
+// ExportFileName 导出文件名：优先调用方自定义名（def 非空）；
+// 否则生成带格式标识 + 账号数量的名字，如 sub2api_10465账号_20260811.json，
+// 避免多种格式导出后分不清。
+func ExportFileName(format string, count int, def string) string {
+	if strings.TrimSpace(def) != "" {
+		return def
+	}
+	label := map[string]string{
+		"json": "json", "sub2api": "sub2api", "sub2api-noproxy": "sub2api无代理",
+		"sub2api-sso": "sso列表", "newapi": "newapi", "full": "完整凭据", "csv": "csv",
+	}[strings.ToLower(strings.TrimSpace(format))]
+	if label == "" {
+		label = format
+	}
+	ext := map[string]string{"csv": "csv", "full": "txt", "sub2api-sso": "txt"}[strings.ToLower(strings.TrimSpace(format))]
+	if ext == "" {
+		ext = "json"
+	}
+	date := time.Now().Format("20060102")
+	if count > 0 {
+		return fmt.Sprintf("%s_%d账号_%s.%s", label, count, date, ext)
+	}
+	return fmt.Sprintf("%s_%s.%s", label, date, ext)
 }
 
 func csvEsc(s string) string {
-        if strings.ContainsAny(s, ",\"\n") {
-                return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-        }
-        return s
+	if strings.ContainsAny(s, ",\"\n") {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
 }
 
 func cleanURLs(urls []string) []string {
-        clean := make([]string, 0, len(urls))
-        seen := map[string]struct{}{}
-        for _, u := range urls {
-                u = strings.TrimSpace(u)
-                if u == "" {
-                        continue
-                }
-                if _, ok := seen[u]; ok {
-                        continue
-                }
-                seen[u] = struct{}{}
-                clean = append(clean, u)
-        }
-        return clean
+	clean := make([]string, 0, len(urls))
+	seen := map[string]struct{}{}
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		clean = append(clean, u)
+	}
+	return clean
 }
 
 func normalizeProxyMode(mode, def string) string {
-        switch strings.ToLower(strings.TrimSpace(mode)) {
-        case "direct", "registration", "global", "selected":
-                return strings.ToLower(strings.TrimSpace(mode))
-        default:
-                if def == "" {
-                        return "direct"
-                }
-                return def
-        }
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "direct", "registration", "global", "selected":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		if def == "" {
+			return "direct"
+		}
+		return def
+	}
 }
 
 func (s *AccountService) GetProxySettings(ctx context.Context) (ProxySettings, error) {
-        raw, err := s.store.GetValue(ctx, KeyProxySettings)
-        if err != nil {
-                return ProxySettings{}, err
-        }
-        var ps ProxySettings
-        if strings.TrimSpace(raw) != "" {
-                _ = json.Unmarshal([]byte(raw), &ps)
-        }
-        // migrate legacy single pool
-        if len(ps.RegisterURLs) == 0 {
-                legacy, _ := s.GetProxyPool(ctx)
-                ps.RegisterURLs = legacy.URLs
-        }
-        if ps.RegisterURLs == nil {
-                ps.RegisterURLs = []string{}
-        }
-        if ps.CaptchaURLs == nil {
-                ps.CaptchaURLs = []string{}
-        }
-        if ps.ImportURLs == nil {
-                ps.ImportURLs = []string{}
-        }
-        ps.CaptchaMode = normalizeProxyMode(ps.CaptchaMode, "registration")
-        ps.ImportMode = normalizeProxyMode(ps.ImportMode, "direct")
-        return ps, nil
+	raw, err := s.store.GetValue(ctx, KeyProxySettings)
+	if err != nil {
+		return ProxySettings{}, err
+	}
+	var ps ProxySettings
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &ps)
+	}
+	// migrate legacy single pool
+	if len(ps.RegisterURLs) == 0 {
+		legacy, _ := s.GetProxyPool(ctx)
+		ps.RegisterURLs = legacy.URLs
+	}
+	if ps.RegisterURLs == nil {
+		ps.RegisterURLs = []string{}
+	}
+	if ps.CaptchaURLs == nil {
+		ps.CaptchaURLs = []string{}
+	}
+	if ps.ImportURLs == nil {
+		ps.ImportURLs = []string{}
+	}
+	ps.CaptchaMode = normalizeProxyMode(ps.CaptchaMode, "registration")
+	ps.ImportMode = normalizeProxyMode(ps.ImportMode, "direct")
+	return ps, nil
 }
 
 func (s *AccountService) SaveProxySettings(ctx context.Context, ps ProxySettings) (ProxySettings, error) {
-        ps.RegisterURLs = cleanURLs(ps.RegisterURLs)
-        ps.CaptchaURLs = cleanURLs(ps.CaptchaURLs)
-        ps.ImportURLs = cleanURLs(ps.ImportURLs)
-        ps.CaptchaMode = normalizeProxyMode(ps.CaptchaMode, "registration")
-        ps.ImportMode = normalizeProxyMode(ps.ImportMode, "direct")
-        b, _ := json.Marshal(ps)
-        if err := s.store.Set(ctx, KeyProxySettings, string(b)); err != nil {
-                return ps, err
-        }
-        // 同步 legacy key，但**绝不能丢掉 Entries**。
-        //
-        // 这里原本是 json.Marshal(ProxyPool{URLs: ps.RegisterURLs})，把整个
-        // KeyProxyPool 覆写成「只有 URLs」—— 代理池的 entries（URL+备注+启用
-        // 状态）连同用户刚添加的几十条代理一起被抹平。
-        //
-        // 用户实测症状：代理池页添加代理 → 确实落盘（PUT entries=46 → 200）→
-        // 切换导航时本页的「出口设置」autosave 触发 SaveProxySettings →
-        // 这一行把池子清空 → 切回来一条不剩。而且 RegisterURLs 通常是空的
-        //（没单独配注册出口），所以连 urls 也变成 0，看起来就是「什么都没存」。
-        //
-        // 正确做法：读出现有池子，只更新 URLs 镜像，保留 Entries；
-        // RegisterURLs 为空时完全不动 legacy key ——「没单独配注册出口」
-        // 不等于「要清空代理池」。
-        // 不再镜像到 KeyProxyPool。
-        //
-        // 这条平行通路是两个 bug 的共同根源：pool.URLs 有两个互相覆盖的写入者
-        //（SaveProxyPool 从 Entries 重算、SaveProxySettings 从 RegisterURLs 镜像），
-        // 而注册消费的正是 pool.URLs，谁后写谁赢：
-        //   1. 覆写时丢掉 Entries → 用户刚加的几十条代理连备注一起消失
-        //      （切换导航就触发，见 TestSaveProxySettingsMustNotClobberPool）
-        //   2. WARP 往 RegisterURLs 追加的出口被代理池那侧重算抹掉
-        //
-        // 现在 pool.URLs 只由 SaveProxyPool 从 Entries 派生（单一写入者），
-        // WARP 出口以 Source=warp 的条目形式进池（见 proxy_pool_warp.go），
-        // 注册出口 = 所有启用条目，两个 bug 一并消失。
-        return ps, nil
+	ps.RegisterURLs = cleanURLs(ps.RegisterURLs)
+	ps.CaptchaURLs = cleanURLs(ps.CaptchaURLs)
+	ps.ImportURLs = cleanURLs(ps.ImportURLs)
+	ps.CaptchaMode = normalizeProxyMode(ps.CaptchaMode, "registration")
+	ps.ImportMode = normalizeProxyMode(ps.ImportMode, "direct")
+	b, _ := json.Marshal(ps)
+	if err := s.store.Set(ctx, KeyProxySettings, string(b)); err != nil {
+		return ps, err
+	}
+	// 同步 legacy key，但**绝不能丢掉 Entries**。
+	//
+	// 这里原本是 json.Marshal(ProxyPool{URLs: ps.RegisterURLs})，把整个
+	// KeyProxyPool 覆写成「只有 URLs」—— 代理池的 entries（URL+备注+启用
+	// 状态）连同用户刚添加的几十条代理一起被抹平。
+	//
+	// 用户实测症状：代理池页添加代理 → 确实落盘（PUT entries=46 → 200）→
+	// 切换导航时本页的「出口设置」autosave 触发 SaveProxySettings →
+	// 这一行把池子清空 → 切回来一条不剩。而且 RegisterURLs 通常是空的
+	//（没单独配注册出口），所以连 urls 也变成 0，看起来就是「什么都没存」。
+	//
+	// 正确做法：读出现有池子，只更新 URLs 镜像，保留 Entries；
+	// RegisterURLs 为空时完全不动 legacy key ——「没单独配注册出口」
+	// 不等于「要清空代理池」。
+	// 不再镜像到 KeyProxyPool。
+	//
+	// 这条平行通路是两个 bug 的共同根源：pool.URLs 有两个互相覆盖的写入者
+	//（SaveProxyPool 从 Entries 重算、SaveProxySettings 从 RegisterURLs 镜像），
+	// 而注册消费的正是 pool.URLs，谁后写谁赢：
+	//   1. 覆写时丢掉 Entries → 用户刚加的几十条代理连备注一起消失
+	//      （切换导航就触发，见 TestSaveProxySettingsMustNotClobberPool）
+	//   2. WARP 往 RegisterURLs 追加的出口被代理池那侧重算抹掉
+	//
+	// 现在 pool.URLs 只由 SaveProxyPool 从 Entries 派生（单一写入者），
+	// WARP 出口以 Source=warp 的条目形式进池（见 proxy_pool_warp.go），
+	// 注册出口 = 所有启用条目，两个 bug 一并消失。
+	return ps, nil
 }
 
 func (s *AccountService) GetProxyPool(ctx context.Context) (ProxyPool, error) {
-        // 主存储：KeyProxyPool（含 entries + 备注）。优先读取，避免旧
-        // KeyProxySettings 镜像（只有 URL 列表）覆盖掉备注/启用状态。
-        raw, err := s.store.GetValue(ctx, KeyProxyPool)
-        if err != nil {
-                return ProxyPool{}, err
-        }
-        var p ProxyPool
-        if strings.TrimSpace(raw) != "" {
-                _ = json.Unmarshal([]byte(raw), &p)
-                if p.URLs == nil {
-                        p.URLs = []string{}
-                }
-        } else {
-                // 兼容回退：老版本只写过 KeyProxySettings 镜像
-                rawSettings, _ := s.store.GetValue(ctx, KeyProxySettings)
-                if strings.TrimSpace(rawSettings) != "" {
-                        var ps ProxySettings
-                        _ = json.Unmarshal([]byte(rawSettings), &ps)
-                        if ps.RegisterURLs == nil {
-                                ps.RegisterURLs = []string{}
-                        }
-                        p = ProxyPool{URLs: ps.RegisterURLs}
-                } else {
-                        return ProxyPool{URLs: []string{}}, nil
-                }
-        }
-        if len(p.Entries) == 0 {
-                // 旧数据迁移：纯 URL 列表 → 条目（默认启用）
-                for _, u := range p.URLs {
-                        p.Entries = append(p.Entries, ProxyEntry{URL: u, Enabled: true})
-                }
-        } else {
-                // 新数据：URLs 派生自启用条目，保持注册引擎消费一致
-                var enabled []string
-                for _, e := range p.Entries {
-                        if e.Enabled && strings.TrimSpace(e.URL) != "" {
-                                enabled = append(enabled, strings.TrimSpace(e.URL))
-                        }
-                }
-                p.URLs = enabled
-        }
-        return p, nil
+	// 主存储：KeyProxyPool（含 entries + 备注）。优先读取，避免旧
+	// KeyProxySettings 镜像（只有 URL 列表）覆盖掉备注/启用状态。
+	raw, err := s.store.GetValue(ctx, KeyProxyPool)
+	if err != nil {
+		return ProxyPool{}, err
+	}
+	var p ProxyPool
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &p)
+		if p.URLs == nil {
+			p.URLs = []string{}
+		}
+	} else {
+		// 兼容回退：老版本只写过 KeyProxySettings 镜像
+		rawSettings, _ := s.store.GetValue(ctx, KeyProxySettings)
+		if strings.TrimSpace(rawSettings) != "" {
+			var ps ProxySettings
+			_ = json.Unmarshal([]byte(rawSettings), &ps)
+			if ps.RegisterURLs == nil {
+				ps.RegisterURLs = []string{}
+			}
+			p = ProxyPool{URLs: ps.RegisterURLs}
+		} else {
+			return ProxyPool{URLs: []string{}}, nil
+		}
+	}
+	if len(p.Entries) == 0 {
+		// 旧数据迁移：纯 URL 列表 → 条目（默认启用）
+		for _, u := range p.URLs {
+			p.Entries = append(p.Entries, ProxyEntry{URL: u, Enabled: true})
+		}
+	} else {
+		// 新数据：URLs 派生自启用条目，保持注册引擎消费一致
+		var enabled []string
+		for _, e := range p.Entries {
+			if e.Enabled && strings.TrimSpace(e.URL) != "" {
+				enabled = append(enabled, strings.TrimSpace(e.URL))
+			}
+		}
+		p.URLs = enabled
+	}
+	return p, nil
 }
 
 func (s *AccountService) SaveProxyPool(ctx context.Context, p ProxyPool) (ProxyPool, error) {
-        if len(p.Entries) > 0 {
-                var clean []ProxyEntry
-                seen := map[string]struct{}{}
-                for _, e := range p.Entries {
-                        e.URL = strings.TrimSpace(e.URL)
-                        if e.URL == "" {
-                                continue
-                        }
-                        if _, ok := seen[e.URL]; ok {
-                                continue
-                        }
-                        seen[e.URL] = struct{}{}
-                        clean = append(clean, e)
-                }
-                p.Entries = clean
-                var enabled []string
-                for _, e := range p.Entries {
-                        if e.Enabled {
-                                enabled = append(enabled, e.URL)
-                        }
-                }
-                p.URLs = enabled
-        } else {
-                p.URLs = cleanURLs(p.URLs)
-        }
-        b, _ := json.Marshal(p)
-        if err := s.store.Set(ctx, KeyProxyPool, string(b)); err != nil {
-                return p, err
-        }
-        // soft-mirror register_urls into settings without full SaveProxySettings (avoid recursion)
-        raw, _ := s.store.GetValue(ctx, KeyProxySettings)
-        var ps ProxySettings
-        if strings.TrimSpace(raw) != "" {
-                _ = json.Unmarshal([]byte(raw), &ps)
-        }
-        ps.RegisterURLs = p.URLs
-        if ps.CaptchaMode == "" {
-                ps.CaptchaMode = "registration"
-        }
-        if ps.ImportMode == "" {
-                ps.ImportMode = "direct"
-        }
-        if ps.CaptchaURLs == nil {
-                ps.CaptchaURLs = []string{}
-        }
-        if ps.ImportURLs == nil {
-                ps.ImportURLs = []string{}
-        }
-        bb, _ := json.Marshal(ps)
-        _ = s.store.Set(ctx, KeyProxySettings, string(bb))
-        return p, nil
+	if len(p.Entries) > 0 {
+		var clean []ProxyEntry
+		seen := map[string]struct{}{}
+		for _, e := range p.Entries {
+			e.URL = strings.TrimSpace(e.URL)
+			if e.URL == "" {
+				continue
+			}
+			if _, ok := seen[e.URL]; ok {
+				continue
+			}
+			seen[e.URL] = struct{}{}
+			clean = append(clean, e)
+		}
+		p.Entries = clean
+		var enabled []string
+		for _, e := range p.Entries {
+			if e.Enabled {
+				enabled = append(enabled, e.URL)
+			}
+		}
+		p.URLs = enabled
+	} else {
+		p.URLs = cleanURLs(p.URLs)
+	}
+	b, _ := json.Marshal(p)
+	if err := s.store.Set(ctx, KeyProxyPool, string(b)); err != nil {
+		return p, err
+	}
+	// soft-mirror register_urls into settings without full SaveProxySettings (avoid recursion)
+	raw, _ := s.store.GetValue(ctx, KeyProxySettings)
+	var ps ProxySettings
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &ps)
+	}
+	ps.RegisterURLs = p.URLs
+	if ps.CaptchaMode == "" {
+		ps.CaptchaMode = "registration"
+	}
+	if ps.ImportMode == "" {
+		ps.ImportMode = "direct"
+	}
+	if ps.CaptchaURLs == nil {
+		ps.CaptchaURLs = []string{}
+	}
+	if ps.ImportURLs == nil {
+		ps.ImportURLs = []string{}
+	}
+	bb, _ := json.Marshal(ps)
+	_ = s.store.Set(ctx, KeyProxySettings, string(bb))
+	return p, nil
 }
 
 // PickImportProxy returns proxy URL for one import job by mode.
 func PickImportProxy(mode string, importURLs, registerURLs []string, regProxy string, idx int) string {
-        mode = normalizeProxyMode(mode, "direct")
-        switch mode {
-        case "direct":
-                return ""
-        case "registration":
-                if regProxy != "" {
-                        return regProxy
-                }
-                if len(registerURLs) == 0 {
-                        return ""
-                }
-                if idx < 0 {
-                        idx = -idx
-                }
-                return registerURLs[idx%len(registerURLs)]
-        case "selected":
-                if len(importURLs) == 0 {
-                        return ""
-                }
-                return importURLs[0]
-        case "global":
-                if len(importURLs) == 0 {
-                        return ""
-                }
-                if idx < 0 {
-                        idx = -idx
-                }
-                return importURLs[idx%len(importURLs)]
-        default:
-                return ""
-        }
+	mode = normalizeProxyMode(mode, "direct")
+	switch mode {
+	case "direct":
+		return ""
+	case "registration":
+		if regProxy != "" {
+			return regProxy
+		}
+		if len(registerURLs) == 0 {
+			return ""
+		}
+		if idx < 0 {
+			idx = -idx
+		}
+		return registerURLs[idx%len(registerURLs)]
+	case "selected":
+		if len(importURLs) == 0 {
+			return ""
+		}
+		return importURLs[0]
+	case "global":
+		if len(importURLs) == 0 {
+			return ""
+		}
+		if idx < 0 {
+			idx = -idx
+		}
+		return importURLs[idx%len(importURLs)]
+	default:
+		return ""
+	}
 }
 
 // ParseProxyText splits multi-line / comma / semicolon proxy list.
 func ParseProxyText(text string) []string {
-        text = strings.ReplaceAll(text, "\r\n", "\n")
-        text = strings.ReplaceAll(text, ";", "\n")
-        text = strings.ReplaceAll(text, ",", "\n")
-        var out []string
-        for _, line := range strings.Split(text, "\n") {
-                line = strings.TrimSpace(line)
-                if line != "" {
-                        out = append(out, line)
-                }
-        }
-        return out
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, ";", "\n")
+	text = strings.ReplaceAll(text, ",", "\n")
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // splitProxyNote 拆分 URL 与备注：支持 "url #备注" 与 "url|备注" 两种写法。
 // 备注仅用于展示/管理，不参与注册出口。
 func splitProxyNote(line string) (url, note string) {
-        line = strings.TrimSpace(line)
-        // 分隔符：# 或 |（可带可不带前导空格，如 "url#备注" / "url #备注" / "url|备注"）
-        idx := -1
-        for i, r := range line {
-                if r == '#' || r == '|' {
-                        idx = i
-                        break
-                }
-        }
-        if idx > 0 && idx < len(line)-1 {
-                url = strings.TrimSpace(line[:idx])
-                note = strings.TrimSpace(line[idx+1:])
-                // 备注可能是 URL 编码（如 #%E6%97%A5%E6%9C%ACZ05）——解码为可读文本
-                if dec, err := neturl.PathUnescape(note); err == nil && dec != note {
-                        note = dec
-                }
-                return url, note
-        }
-        return line, ""
+	line = strings.TrimSpace(line)
+	// 分隔符：# 或 |（可带可不带前导空格，如 "url#备注" / "url #备注" / "url|备注"）
+	idx := -1
+	for i, r := range line {
+		if r == '#' || r == '|' {
+			idx = i
+			break
+		}
+	}
+	if idx > 0 && idx < len(line)-1 {
+		url = strings.TrimSpace(line[:idx])
+		note = strings.TrimSpace(line[idx+1:])
+		// 备注可能是 URL 编码（如 #%E6%97%A5%E6%9C%ACZ05）——解码为可读文本
+		if dec, err := neturl.PathUnescape(note); err == nil && dec != note {
+			note = dec
+		}
+		return url, note
+	}
+	return line, ""
 }
 
 // ParseProxyTextEntries 解析代理池文本为条目（URL + 备注 + 默认启用），按 URL 去重。
 func ParseProxyTextEntries(text string) []ProxyEntry {
-        var out []ProxyEntry
-        seen := map[string]struct{}{}
-        for _, line := range ParseProxyText(text) {
-                u, note := splitProxyNote(line)
-                u = strings.TrimSpace(u)
-                if u == "" {
-                        continue
-                }
-                if _, ok := seen[u]; ok {
-                        continue
-                }
-                seen[u] = struct{}{}
-                out = append(out, ProxyEntry{URL: u, Note: note, Enabled: true})
-        }
-        return out
+	var out []ProxyEntry
+	seen := map[string]struct{}{}
+	for _, line := range ParseProxyText(text) {
+		u, note := splitProxyNote(line)
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		out = append(out, ProxyEntry{URL: u, Note: note, Enabled: true})
+	}
+	return out
 }
 
 func truncStr(s string, n int) string {
-        r := []rune(s)
-        if len(r) <= n {
-                return s
-        }
-        return string(r[:n]) + "…"
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // DefaultTestPrompt 测试对话默认提示词（用户不填时用它，保证一键可测）。
@@ -1103,16 +1129,16 @@ func (s *AccountService) VerifyCredential(ctx context.Context, id string, usePro
 
 // AccountPatch 单账号可编辑字段；nil 表示不改（区分「不传」与「置空」）。
 type AccountPatch struct {
-	Email    *string `json:"email"`
-	Password *string `json:"password"`
-	SSO      *string `json:"sso"`
-	SSORW    *string `json:"sso_rw"`
-	Proxy    *string `json:"proxy"`
-	BaseURL  *string `json:"base_url"`
-	Note     *string `json:"note"`
-	Status   *string `json:"status"`
-	Imported *bool   `json:"imported"`
-	GroupID  *string `json:"group_id"`
+	Email     *string `json:"email"`
+	Password  *string `json:"password"`
+	SSO       *string `json:"sso"`
+	SSORW     *string `json:"sso_rw"`
+	Proxy     *string `json:"proxy"`
+	BaseURL   *string `json:"base_url"`
+	Note      *string `json:"note"`
+	Status    *string `json:"status"`
+	Imported  *bool   `json:"imported"`
+	GroupID   *string `json:"group_id"`
 	GroupName *string `json:"group_name"`
 }
 

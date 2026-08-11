@@ -1065,13 +1065,13 @@ func (a *API) Router() *gin.Engine {
 	gr.GET("/accounts/export", func(c *gin.Context) {
 		format := c.DefaultQuery("format", "json")
 		successOnly := c.DefaultQuery("success_only", "true") != "false"
-		body, ctype, err := a.Accounts.Export(c.Request.Context(), format, successOnly)
+		body, ctype, _, err := a.Accounts.Export(c.Request.Context(), format, successOnly)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
 		c.Header("Content-Type", ctype+"; charset=utf-8")
-		c.Header("Content-Disposition", "attachment; filename=umbraforge-accounts."+extFor(format))
+		c.Header("Content-Disposition", "attachment; filename="+engine.ExportFileName(format, 0, ""))
 		c.String(200, body)
 	})
 	// Native Save-As dialog (desktop): user picks path, server writes file.
@@ -1092,16 +1092,12 @@ func (a *API) Router() *gin.Engine {
 		if body.SuccessOnly != nil {
 			successOnly = *body.SuccessOnly
 		}
-		def := body.DefaultName
-		if def == "" {
-			def = "umbraforge-accounts." + extFor(body.Format)
-		}
-		content, _, err := a.Accounts.Export(c.Request.Context(), body.Format, successOnly)
+		content, _, count, err := a.Accounts.Export(c.Request.Context(), body.Format, successOnly)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		path, err := engine.ChooseSavePath("导出账号 — 选择保存位置", def)
+		path, err := engine.ChooseSavePath("导出账号 — 选择保存位置", engine.ExportFileName(body.Format, count, body.DefaultName))
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return

@@ -107,14 +107,11 @@ export const importOnce = async () => unwrap(await api.post('/api/v1/admin/grok-
 
 /** Open native Save-As dialog and write export file. User chooses path. */
 export async function exportSaveAs(format: string, successOnly = true) {
-  // sub2api / sub2api-noproxy / newapi 都是 JSON；full 与 sub2api-sso 是纯文本
-  const ext =
-    format === 'csv' ? 'csv' : format === 'full' || format === 'sub2api-sso' ? 'txt' : 'json'
+  // 文件名由后端生成：带格式标识 + 账号数量（如 sub2api_10465账号_20260811.json）
   return unwrap<{ cancelled: boolean; path?: string; bytes?: number }>(
     await api.post('/api/v1/admin/grok-register/accounts/export-save', {
       format,
-      success_only: successOnly,
-      default_name: `umbraforge-accounts.${ext}`
+      success_only: successOnly
     })
   )
 }

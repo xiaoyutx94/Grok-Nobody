@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestExportSub2APIPassesImportValidation(t *testing.T) {
 	seedExportAccount(t, svc, "a@example.com", "socks5://u:p@1.2.3.4:1080")
 	seedExportAccount(t, svc, "b@example.com", "")
 
-	raw, ctype, err := svc.Export(context.Background(), "sub2api", false)
+	raw, ctype, _, err := svc.Export(context.Background(), "sub2api", false)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -123,9 +124,9 @@ func TestExportSub2APIEmitsAndBindsProxy(t *testing.T) {
 	svc := newTestAccountService(t)
 	seedExportAccount(t, svc, "p1@example.com", "socks5://user:secret@10.0.0.9:1080")
 	seedExportAccount(t, svc, "p2@example.com", "socks5://user:secret@10.0.0.9:1080") // 同代理
-	seedExportAccount(t, svc, "p3@example.com", "")                                    // 直连
+	seedExportAccount(t, svc, "p3@example.com", "")                                   // 直连
 
-	raw, _, err := svc.Export(context.Background(), "sub2api", false)
+	raw, _, _, err := svc.Export(context.Background(), "sub2api", false)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestExportSub2APINoProxyVariant(t *testing.T) {
 	svc := newTestAccountService(t)
 	seedExportAccount(t, svc, "n@example.com", "socks5://1.2.3.4:1080")
 
-	raw, _, err := svc.Export(context.Background(), "sub2api-noproxy", false)
+	raw, _, _, err := svc.Export(context.Background(), "sub2api-noproxy", false)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestExportSub2APINoProxyVariant(t *testing.T) {
 
 func TestExportSub2APIEmptyListStillValid(t *testing.T) {
 	svc := newTestAccountService(t)
-	raw, _, err := svc.Export(context.Background(), "sub2api", false)
+	raw, _, _, err := svc.Export(context.Background(), "sub2api", false)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestExportSub2APISSOIsPlainList(t *testing.T) {
 	seedExportAccount(t, svc, "s1@example.com", "")
 	seedExportAccount(t, svc, "s2@example.com", "")
 
-	raw, ctype, err := svc.Export(context.Background(), "sub2api-sso", false)
+	raw, ctype, _, err := svc.Export(context.Background(), "sub2api-sso", false)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestExportNewAPIChannelShape(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	raw, ctype, err := svc.Export(context.Background(), "newapi", false)
+	raw, ctype, _, err := svc.Export(context.Background(), "newapi", false)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestProxyToSub2APIRejectsUnparseable(t *testing.T) {
 
 func TestExportUnknownFormatListsNewOnes(t *testing.T) {
 	svc := newTestAccountService(t)
-	_, _, err := svc.Export(context.Background(), "bogus", false)
+	_, _, _, err := svc.Export(context.Background(), "bogus", false)
 	if err == nil {
 		t.Fatal("未知格式应报错")
 	}
@@ -348,5 +349,31 @@ func TestExportUnknownFormatListsNewOnes(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("错误提示应列出 %s: %v", want, err)
 		}
+	}
+}
+
+func TestExportFileName(t *testing.T) {
+	// 带数量：格式标识 + 账号数 + 日期
+	name := ExportFileName("sub2api", 10465, "")
+	if name != "sub2api_10465账号_20260811.json" && !regexp.MustCompile(`^sub2api_\d+账号_\d{8}\.json$`).MatchString(name) {
+		t.Fatalf("sub2api 文件名异常: %s", name)
+	}
+	// 无代理/新格式标识
+	if !regexp.MustCompile(`^sub2api无代理_\d+账号_\d{8}\.json$`).MatchString(ExportFileName("sub2api-noproxy", 3, "")) {
+		t.Fatal("sub2api-noproxy 文件名异常: " + ExportFileName("sub2api-noproxy", 3, ""))
+	}
+	if !regexp.MustCompile(`^sso列表_\d+账号_\d{8}\.txt$`).MatchString(ExportFileName("sub2api-sso", 3, "")) {
+		t.Fatal("sub2api-sso 文件名异常")
+	}
+	if !regexp.MustCompile(`^csv_\d+账号_\d{8}\.csv$`).MatchString(ExportFileName("csv", 3, "")) {
+		t.Fatal("csv 文件名异常")
+	}
+	// 无数量（浏览器下载路径）只带格式+日期
+	if !regexp.MustCompile(`^newapi_\d{8}\.json$`).MatchString(ExportFileName("newapi", 0, "")) {
+		t.Fatal("newapi 无数量文件名异常")
+	}
+	// 自定义名优先
+	if ExportFileName("csv", 3, "我的导出.txt") != "我的导出.txt" {
+		t.Fatal("自定义名应优先")
 	}
 }
