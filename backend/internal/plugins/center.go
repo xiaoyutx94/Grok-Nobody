@@ -1918,6 +1918,7 @@ func (c *Center) cmdVeloraTurnLocal() (*exec.Cmd, error) {
 	}
 	for _, b := range cands {
 		if fileExists(b) {
+			procutil.EnsureExecutable(b)
 			cmd := procutil.Command(b)
 			cmd.Env = append(os.Environ(), "PORT=8193", "HOST=127.0.0.1")
 			return cmd, nil
@@ -1979,6 +1980,9 @@ func (c *Center) cmdAuralithLocal() (*exec.Cmd, error) {
 			bin = cand
 			break
 		}
+	}
+	if bin != "" {
+		procutil.EnsureExecutable(bin)
 	}
 
 	// try compile from monorepo source if present

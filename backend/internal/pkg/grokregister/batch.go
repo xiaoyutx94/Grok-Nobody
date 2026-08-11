@@ -1,6 +1,7 @@
 package grokregister
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -1051,6 +1052,13 @@ func RunBatch(opts BatchOptions, cancel *SafeCancel) BatchProgress {
 	}
 	wg.Wait()
 	close(batchDone)
+
+	// 批次结束即回收打码浏览器：引擎默认保留 standby 进程等下一次 solve，
+	// 没有注册任务时这些 Chrome 白占内存（实测容器 14 个进程 / 2.3GB 常驻），
+	// 而且下一批开跑时它们已经在啃内存，更容易撞资源闸门。
+	// 硬回收（suspend=true）关掉全部浏览器进程并停泊池；下一次 /solve 到达时
+	// 引擎自己 resume，不需要手动 prewarm。
+	ReleaseCaptchaBrowsers(context.Background(), opts.Captcha)
 
 	// ── 4) Summary ──
 	proxyMu.Lock()

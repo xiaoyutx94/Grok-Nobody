@@ -1483,9 +1483,29 @@ func (a *API) Router() *gin.Engine {
 		var body struct {
 			Cores int `json:"cores"` // <=0 用推荐值
 			MemMB int `json:"mem_mb"`
+			// Share=true：内存按「与主机共享」档（宿主 3/4）。
+			// colima+vz 有内存气球，该配额只是上限，实占跟真实用量走、
+			// 空闲归还宿主 —— 这才是用户要的「和主机共享内存」，
+			// 而不是把固定几 G 死死切走。
+			Share bool `json:"share"`
 		}
 		_ = c.ShouldBindJSON(&body)
-		c.JSON(200, gin.H{"code": 0, "data": a.Plugins.ApplyDockerVMSpecsAsync(body.Cores, body.MemMB)})
+		memMB := body.MemMB
+		cores := body.Cores
+		if body.Share {
+			rt := a.Plugins.DockerRuntime()
+			memMB = plugins.ShareHostMemoryMB(rt.HostMemMB)
+			// 共享档只改内存。CPU 保持当前值 —— 核数直接决定打码槽位
+			// （槽位≈核×1.5），走推荐值会把用户已调好的 12 核降到 8 核，
+			// 白白砍掉 1/3 吞吐。用户想改核数有「按本机优化」和手填两条路。
+			if cores <= 0 {
+				cores = rt.VMCores
+			}
+			if cores <= 0 {
+				cores = rt.RecCores
+			}
+		}
+		c.JSON(200, gin.H{"code": 0, "data": a.Plugins.ApplyDockerVMSpecsAsync(cores, memMB)})
 	})
 	dk.GET("/containers", func(c *gin.Context) {
 		list, err := a.Plugins.ListContainers()

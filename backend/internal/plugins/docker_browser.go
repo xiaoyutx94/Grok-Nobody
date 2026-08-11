@@ -33,7 +33,17 @@ const (
 	// v7: 引擎二进制全面重编（auralith 600010 修复 + veloraturn/auralith
 	// detectMemMB Windows 分支 + 最新源码），旧镜像（v6）里固化的是
 	// 7月24/25 旧二进制，必须 bump 版本才能触发重建。
-	dockerBootstrapVersion = "v7"
+	// v8: 对齐 amd64 生产打码机（裸机 systemd，solved 6.2万/failed 138）的三项配置：
+	//   1. --shm-size 由写死 1g 改为按 VM 内存自适应（生产宿主 /dev/shm=3.9G）；
+	//   2. 注入 MEMORY_PRESSURE_WATCH（cgroup 压力接口）——auralith 原先用
+	//      逐进程 RSS 累加判资源，把 Chrome 多进程共享的物理页重复计（实测
+	//      cgroup 2348MB vs 累加 7481MB），一上并发就 503 high-water；
+	//   3. AURALITH_RESOURCE_SAMPLE_MS=1000 与生产一致。
+	// 同时 auralith 二进制内含 cgroup 采样修复，必须 bump 触发容器重建。
+	// v9: auralith 源码补上「空闲 TTL 回收」（AURALITH_CONTEXT_IDLE_TTL_SEC=60）：
+	//     之前 env 一直在传但二进制不支持，12 并发压测后 6 个浏览器进程
+	//     (~1.5GB) 永久常驻；现在空闲 60s 后只留 standby 2 个，其余回收。
+	dockerBootstrapVersion = "v9"
 
 	// dockerBrowserBootstrap 首次启动时装 Chrome + Xvfb。
 	// 已装则跳过（容器重启复用同一层，apt 只跑一次）。

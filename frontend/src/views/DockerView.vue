@@ -248,22 +248,32 @@ async function startVM() {
   }
 }
 
-async function applySpecs(useRecommended: boolean) {
+/** mode: true=按本机优化（推荐值）｜false=手填｜'share'=与主机共享内存（上限=宿主 3/4） */
+async function applySpecs(mode: boolean | 'share') {
   if (!rt.value) return
-  const cores = useRecommended ? 0 : formCores.value
-  const memMB = useRecommended ? 0 : formMemGB.value * 1024
-  const target = useRecommended
-    ? `${rt.value.rec_cores} 核 / ${memGB(rt.value.rec_mem_mb)}GB`
-    : `${cores} 核 / ${formMemGB.value}GB`
+  const share = mode === 'share'
+  const useRecommended = mode === true
+  // 共享档只动内存，核数沿用当前值：槽位≈核×1.5，降核等于直接砍吞吐。
+  const cores = share ? (rt.value.vm_cores || 0) : useRecommended ? 0 : formCores.value
+  const memMB = useRecommended || share ? 0 : formMemGB.value * 1024
+  const target = share
+    ? `内存上限 ${memGB(rt.value.share_mem_mb)}GB（与主机共享）`
+    : useRecommended
+      ? `${rt.value.rec_cores} 核 / ${memGB(rt.value.rec_mem_mb)}GB`
+      : `${cores} 核 / ${formMemGB.value}GB`
+  // 共享档的语义必须说清楚：气球下配额是上限而非独占，否则用户会以为 24G 被切走。
+  const extra = share && rt.value.mem_balloon
+    ? `\n\n共享模式下这个数字是「最多可用」，不是独占：VM 按实际用量占内存，空闲会自动还给 macOS。`
+    : ''
   const ok = await confirmBox(
-    `将 Docker 虚拟机调整为 ${target}？\n\n` +
+    `将 Docker 虚拟机调整为 ${target}？${extra}\n\n` +
     `虚拟机会重启，期间所有容器不可用（重启策略为 always / unless-stopped 的会自动回来）。\n` +
     `整个过程通常 1~3 分钟。`
   )
   if (!ok) return
   busy.value = 'resize'
   try {
-    resizeTask.value = await dk.applyRuntime(cores, memMB)
+    resizeTask.value = await dk.applyRuntime(cores, memMB, share)
     startPollingTask()
   } catch (e: any) {
     toast('调整失败：' + errText(e), 'bad')
@@ -467,6 +477,35 @@ onUnmounted(() => {
       <template v-else>{{ rt.message || 'Docker 守护进程未就绪' }}</template>
     </p>
 
+    <!-- 共享状态：一句话回答「容器跟主机共享没」。
+         三种后端语义不同：
+         - colima+vz / Docker Desktop：配额=上限，实占按需、空闲归还；
+         - Linux 原生：无虚拟机层，容器直接用宿主全部算力（完全直通）。 -->
+    <section v-if="rt?.daemon_ok && rt?.vm_specs_known" class="sec share-state" :class="rt.mem_balloon ? 'is-shared' : ''">
+      <span class="st">算力共享</span>
+      <span class="mv2">
+        <template v-if="rt?.backend === 'native-linux'">
+          ✓ 完全共享 —— Linux 原生 Docker 无虚拟机层，容器直接用满本机
+          <b>{{ rt.vm_cores }} 核 / {{ memGB(rt.vm_mem_mb) }}GB</b>，无配额
+        </template>
+        <template v-else-if="rt.mem_balloon">
+          ✓ 已共享 —— 打码容器可用 <b>{{ rt.vm_cores }} 核 / {{ memGB(rt.vm_mem_mb) }}GB</b>（上限），
+          按需占用，空闲自动归还系统（{{ rt.vm_type || 'vz' }} 动态内存）
+        </template>
+        <template v-else>
+          容器无独立限制（{{ rt.vm_cores }} 核 / {{ memGB(rt.vm_mem_mb) }}GB 上限），
+          当前后端（{{ rt.vm_type || rt.backend }}）配额会被实打实占住
+        </template>
+      </span>
+      <div class="sp" />
+      <span v-if="rt.resizable" class="mnote">
+        <template v-if="rt.mem_balloon">想调上限？</template>
+        <template v-else>可调上限</template>
+      </span>
+      <button v-if="rt.resizable" class="btn btn-ghost btn-xs"
+              @click="showAdvanced = !showAdvanced">调整规格</button>
+    </section>
+
     <!-- 算力条：本机 → 容器 → 槽位 → 吞吐，一行读完 -->
     <section class="strip" :class="{ 'is-warn': rt?.undersized }">
       <div class="mt">
@@ -529,6 +568,27 @@ onUnmounted(() => {
       <span class="mnote">预计 {{ Math.max(1, Math.floor(formCores * 1.5)) }} 槽 · 约
         {{ Math.max(1, Math.floor(formCores * 1.5)) * 3 }} 个/分钟</span>
       <button class="btn btn-primary btn-xs" :disabled="!!busy" @click="applySpecs(false)">应用</button>
+    </section>
+
+    <!-- 与主机共享内存（vz 气球）：配额是上限不是独占。已共享时只显示状态，
+         不重复给切换按钮；未共享（mem_balloon=false 或配额明显低于共享档）才给按钮。 -->
+    <section v-if="rt?.resizable && rt?.share_mem_mb && showAdvanced" class="sec manual">
+      <span class="mk">内存上限</span>
+      <span class="mnote" :class="rt.mem_balloon ? '' : 'warn'">
+        <template v-if="rt.mem_balloon">
+          {{ rt.vm_mem_mb >= rt.share_mem_mb - 1024
+            ? '当前已按共享档设置（上限 ' + memGB(rt.share_mem_mb) + 'GB，按需占用）'
+            : '当前上限 ' + memGB(rt.vm_mem_mb) + 'GB，共享档可提到 ' + memGB(rt.share_mem_mb) + 'GB' }}
+        </template>
+        <template v-else>
+          当前后端（{{ rt.vm_type || rt.backend }}）无内存气球，配额会被实打实占住，加大前请确认宿主余量
+        </template>
+      </span>
+      <div class="sp" />
+      <button v-if="rt.mem_balloon && rt.vm_mem_mb < rt.share_mem_mb - 1024"
+              class="btn btn-primary btn-xs" :disabled="!!busy" @click="applySpecs('share')">
+        提到 {{ memGB(rt.share_mem_mb) }}GB（共享档）
+      </button>
     </section>
 
     <!-- 打码引擎：三引擎一体容器，状态与动作同一行 -->
@@ -749,6 +809,11 @@ onUnmounted(() => {
   background: var(--panel-solid);
 }
 .sh { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 6px; }
+/* 算力共享状态条：回答「容器跟主机共享没」，一眼可读 */
+.share-state { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.share-state.is-shared { border-color: color-mix(in srgb, var(--ok, #2fbf71) 40%, transparent); }
+.share-state .mv2 { font-size: 12.5px; color: var(--ink-2); }
+.share-state .mv2 b { color: var(--ink); }
 .st { font-size: 12.5px; font-weight: 700; letter-spacing: -.01em; }
 .cnt {
   font-size: 10.5px; font-weight: 700; padding: 0 6px; border-radius: 999px;

@@ -61,6 +61,15 @@ type DockerRuntimeInfo struct {
 	// AboveRecommended 当前配额高于推荐值（用户主动加过配额）。
 	AboveRecommended bool `json:"above_recommended"`
 
+	// ── 与主机共享内存（vz 气球）──
+	// ShareMemMB 是「共享内存」档的配额上限（宿主的 3/4）。
+	// MemBalloon 为 true 时该配额只是上限：VM 实占跟真实用量走，空闲归还宿主；
+	// 为 false（qemu / Docker Desktop）时配额会被实打实占住，加大要谨慎。
+	ShareMemMB int  `json:"share_mem_mb"`
+	MemBalloon bool `json:"mem_balloon"`
+	// VMType 底层虚拟化类型（vz / qemu / ""），前端据此解释配额语义。
+	VMType string `json:"vm_type,omitempty"`
+
 	// Startable 能否由本程序把 Docker 拉起来（Docker Desktop / colima 都算）。
 	// 前端据此决定显示「启动 Docker」还是「重新安装」。
 	Startable bool `json:"startable"`
@@ -279,6 +288,23 @@ func (c *Center) DockerRuntime() DockerRuntimeInfo {
 	}
 
 	info.RecCores, info.RecMemMB = recommendVMSpecs(info.HostCores, info.HostMemMB)
+	// 共享内存档：配额 = 宿主 3/4。
+	// - colima+vz：内存气球，配额=上限、实占按需、空闲归还宿主（macOS）；
+	// - Docker Desktop（macOS/Windows）：底层 WSL2/Hyper-V/vz 同样有动态内存，
+	//   设置里的 memoryMiB 只是上限，实占按需（Windows 11 WSL2 还带自动回收）；
+	// - Linux 原生：无虚拟机层，容器直接用宿主全部内存，压根没有配额概念。
+	info.ShareMemMB = ShareHostMemoryMB(info.HostMemMB)
+	switch info.Backend {
+	case BackendColima:
+		info.VMType = colimaVMType()
+		info.MemBalloon = info.VMType == "" || info.VMType == "vz"
+	case BackendDockerDesktop:
+		info.VMType = "wsl2/hyper-v/vz"
+		info.MemBalloon = true // 动态内存：上限即上限，实占按需
+	case BackendNativeLinux:
+		info.VMType = "native"
+		info.MemBalloon = true // 无 VM 层 = 完全直通，无需回收机制
+	}
 	info.CurSlots = capacityFromSpecs(info.VMCores, info.VMMemMB)
 	info.RecSlots = capacityFromSpecs(info.RecCores, info.RecMemMB)
 	// 欠配判定：可调、且推荐槽位比当前多 50% 以上（避免为了 1 个槽位就提示重建 VM）
@@ -429,6 +455,56 @@ func dockerDesktopSavedSpecs() (cores, memMB int) {
 	return num("cpus", "Cpus", "cpu"), num("memoryMiB", "MemoryMiB", "memoryMib")
 }
 
+// colimaVMType 读 colima 配置里的 vmType（"vz" / "qemu"），读不到返回空串。
+//
+// 为什么要区分：vz（Apple Virtualization）有内存气球，配额是「上限」而非
+// 「预留」——VM 只在真正用到时占宿主物理内存，空闲会归还 macOS。qemu 没有
+// 气球，配额给多少就实占多少。所以「共享内存」这档只在 vz 下才成立。
+func colimaVMType() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".colima", "default", "colima.yaml"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "vmType:") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(line, "vmType:"))
+		v = strings.Trim(v, `"'`)
+		return strings.ToLower(v)
+	}
+	return ""
+}
+
+// ShareHostMemoryMB 返回「与主机共享内存」这一档应设的 VM 配额（MB）。
+//
+// 语义：把宿主内存的 3/4 作为上限交给 VM。在 vz 下这不是切走 3/4，而是
+// 「最多可以用到 3/4」——气球机制让实占跟着真实用量走，空闲时还给 macOS。
+// 实测宿主 32G、VM 配额 6G 时，VM 进程 RSS 已达 7.58G（含虚拟化自身开销），
+// 而宿主仍有 70% 空闲；把上限提到 24G 既解决打码并发吃紧，也不会真的常驻 24G。
+//
+// 留 1/4 给 macOS 本身（窗口服务、Spotlight、用户的浏览器/IDE），
+// 避免 VM 峰值把宿主推进 swap。
+func ShareHostMemoryMB(hostMemMB int) int {
+	if hostMemMB <= 0 {
+		return recMemMaxMB
+	}
+	mb := hostMemMB * 3 / 4
+	mb = (mb / 1024) * 1024 // 对齐到 1G
+	if mb < recMemMinMB {
+		mb = recMemMinMB
+	}
+	if mb > hostMemMB {
+		mb = (hostMemMB / 1024) * 1024
+	}
+	return mb
+}
+
 // ApplyDockerVMSpecs 把 Docker VM 调整到指定规格。
 // cores/memMB <=0 时用推荐值。这是重量级操作：会重启 Docker 运行时，
 // 期间所有容器不可用（重启策略为 always/unless-stopped 的会自行回来）。
@@ -487,8 +563,15 @@ func (c *Center) applyColimaSpecs(cores, memMB int, log func(string)) error {
 	log(fmt.Sprintf("正在以 %d 核 / %dGB 启动 colima…", cores, memGB))
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 420*time.Second)
 	defer cancel2()
-	out, err := procutil.CommandContext(ctx2, "colima", "start",
-		"--cpu", strconv.Itoa(cores), "--memory", strconv.Itoa(memGB)).CombinedOutput()
+	// vmType=vz（Apple Virtualization）支持内存气球：配额只是上限，
+	// 未用到的部分不会常驻宿主物理内存，空闲时归还 macOS。所以「给大配额」
+	// 等价于用户要的「与主机共享内存」——而不是把 6G 死死切走。
+	// qemu 没有气球，配额会实打实占住，因此只在 vz 下推荐大配额。
+	args := []string{"start", "--cpu", strconv.Itoa(cores), "--memory", strconv.Itoa(memGB)}
+	if vt := colimaVMType(); vt == "" || vt == "vz" {
+		args = append(args, "--vm-type", "vz")
+	}
+	out, err := procutil.CommandContext(ctx2, "colima", args...).CombinedOutput()
 	if err != nil {
 		log(strings.TrimSpace(string(out)))
 		return fmt.Errorf("colima start 失败: %v", err)

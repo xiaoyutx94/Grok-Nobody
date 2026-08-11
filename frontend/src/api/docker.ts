@@ -22,6 +22,13 @@ export interface DockerRuntime {
   rec_is_upgrade: boolean
   /** 当前配额已高于推荐值 */
   above_recommended: boolean
+  /** 「与主机共享内存」档的配额上限（MB）= 宿主 3/4 */
+  share_mem_mb: number
+  /** 底层有内存气球（vz）：配额只是上限，实占跟用量走、空闲归还宿主。
+   *  false（qemu / Docker Desktop）时配额会被实打实占住。 */
+  mem_balloon: boolean
+  /** 虚拟化类型：vz / qemu / 空 */
+  vm_type?: string
   /** 本程序能否直接把 Docker 拉起来（Docker Desktop / colima） */
   startable: boolean
   /** 安装不完整：有 docker 命令但找不到运行时本体（多为安装中断残骸） */
@@ -85,9 +92,14 @@ export const deployAllCaptcha = async () =>
 export const startVM = async () =>
   unwrap<{ message: string }>(await api.post(`${B}/vm/start`, {}, { timeout: 300_000 }))
 
-/** cores/mem_mb 传 0 表示用推荐值。异步任务，轮询 plugins/docker-task 看进度。 */
-export const applyRuntime = async (cores = 0, mem_mb = 0) =>
-  unwrap<DockerTask>(await api.post(`${B}/runtime/apply`, { cores, mem_mb }))
+/**
+ * cores/mem_mb 传 0 表示用推荐值。异步任务，轮询 plugins/docker-task 看进度。
+ *
+ * share=true 走「与主机共享内存」档：配额取宿主 3/4。colima+vz 有内存气球，
+ * 该配额只是上限——VM 实占跟真实用量走、空闲归还宿主，而不是把固定几 G 切走。
+ */
+export const applyRuntime = async (cores = 0, mem_mb = 0, share = false) =>
+  unwrap<DockerTask>(await api.post(`${B}/runtime/apply`, { cores, mem_mb, share }))
 
 export const listContainers = async () =>
   unwrap<DockerContainer[]>(await api.get(`${B}/containers`))

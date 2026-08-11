@@ -3,10 +3,12 @@ package plugins
 import (
 	"context"
 	"fmt"
-	"github.com/umbraforge/desktop/internal/procutil"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/umbraforge/desktop/internal/procutil"
 )
 
 // ── 一体容器：三个打码引擎装进同一个容器 ──
@@ -138,7 +140,20 @@ func (c *Center) dockerRunArgsCombined(image string) []string {
 		"--restart", "unless-stopped",
 		"-e", "CHROME_PATH=" + dockerChromePath,
 		"-e", "EZSOLVER_OFFSCREEN=0",
-		"--shm-size=1g",
+		// 共享内存：Chrome 多进程把渲染画布/IPC 缓冲放 /dev/shm。
+		// amd64 生产打码机（裸机 systemd，稳定跑 12 并发、solved 6.2 万/失败 138）
+		// 用的是宿主 /dev/shm=3.9G；此前容器写死 1g，一上并发就把 shm 打满，
+		// Chrome 退回磁盘临时文件（--disable-dev-shm-usage 的兜底路径）→ 变慢 +
+		// 进程堆积。这里按 Docker VM 可用内存的 1/2 自适应（下限 1g、上限 4g），
+		// 与生产量级对齐。
+		"--shm-size=" + dockerShmSize(),
+		// cgroup 内存压力接口：让 auralith 用「内核压力信号」而不是「逐进程 RSS
+		// 累加」判断资源紧张。累加会把 Chrome 多进程共享的同一份物理页按进程数
+		// 重复计（实测容器 cgroup 2348MB vs 累加 7481MB，虚高 3.2 倍），直接把
+		// rss_high_water 判爆 → 并发 solve 全部 503 resource high-water。
+		// 生产机正是靠 MEMORY_PRESSURE_WATCH 走对了口径，从不误判。
+		"-e", "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/memory.pressure",
+		"-e", "AURALITH_RESOURCE_SAMPLE_MS=1000",
 	}
 	workerEnv := []struct {
 		id  PluginID
@@ -155,6 +170,52 @@ func (c *Center) dockerRunArgsCombined(image string) []string {
 	}
 	args = append(args, image, "bash", "-lc", dockerCombinedEntry)
 	return args
+}
+
+// dockerShmSize 返回 --shm-size 取值（如 "3g"）。
+//
+// 口径：Docker VM 总内存的 1/2，夹在 [1g, 4g]。
+//   - 下限 1g：低于此 Chrome 一上并发就把 shm 打满；
+//   - 上限 4g：与 amd64 生产机宿主 /dev/shm=3.9G 对齐，再大对打码无收益，
+//     且 shm 是 tmpfs，占的是同一份 VM 内存，给太多反而挤掉引擎本体。
+//
+// 读不到 VM 内存时回落 2g（比原来的写死 1g 更接近生产，且 4G VM 也吃得下）。
+func dockerShmSize() string { return clampShmSize(dockerVMMemoryMB()) }
+
+// clampShmSize 把 VM 总内存(MB)换算成 --shm-size 取值。抽成纯函数以便单测。
+// totalMB<=0（docker info 读不到）→ 2g：比原来写死的 1g 更接近生产，
+// 且 4G VM 也吃得下。
+func clampShmSize(totalMB int) string {
+	if totalMB <= 0 {
+		return "2g"
+	}
+	half := totalMB / 2
+	switch {
+	case half < 1024:
+		return "1g"
+	case half > 4096:
+		return "4g"
+	default:
+		return fmt.Sprintf("%dm", half)
+	}
+}
+
+// dockerVMMemoryMB 读 Docker 守护进程报告的总内存（MB），失败返回 0。
+// 用 docker info 而不是宿主 sysctl：colima/Docker Desktop 里引擎跑在 VM 内，
+// 宿主 32G 不代表容器能用 32G（实测 VM 配额 5771MB）。
+func dockerVMMemoryMB() int {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	out, err := procutil.CommandContext(ctx, dockerExecutable(),
+		"info", "--format", "{{.MemTotal}}").Output()
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return int(n / 1024 / 1024)
 }
 
 // createCombinedContainer 建一体容器：create → cp 三个引擎的文件 → start。
