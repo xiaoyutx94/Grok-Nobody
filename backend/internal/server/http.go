@@ -978,6 +978,16 @@ func (a *API) Router() *gin.Engine {
 		}
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{"models": models, "fallback": false}})
 	})
+	// 用量查询（sub2api 同款 billing 探测：周 credits + 月额度）
+	gr.GET("/accounts/:id/usage", func(c *gin.Context) {
+		useProxy := c.Query("use_proxy") == "true"
+		summary, err := a.Accounts.FetchAccountUsage(c.Request.Context(), c.Param("id"), useProxy)
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"code": 0, "data": summary})
+	})
 	// 单账号凭证校验（拉 /models，比对话更快更省）
 	gr.POST("/accounts/:id/verify", func(c *gin.Context) {
 		var body struct {

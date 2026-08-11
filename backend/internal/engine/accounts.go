@@ -1114,6 +1114,57 @@ func (s *AccountService) ListModels(ctx context.Context, id string, useProxy boo
 	return models, nil
 }
 
+// FetchAccountUsage 查询账号用量（sub2api 同款 billing 探测）：
+// 周窗口 /billing?format=credits + 月窗口 /billing，带 CLI 身份头 + 账号代理出口。
+// 双窗口任一成功即返回合并摘要（partial 标记失败侧）。
+func (s *AccountService) FetchAccountUsage(ctx context.Context, id string, useProxy bool) (*xai.BillingSummary, error) {
+	acc, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(acc.AccessToken) == "" {
+		return nil, fmt.Errorf("账号无 OAuth 凭证（未入库转换），无法查询用量")
+	}
+	client, _, err := newAccountHTTPClient(&acc, useProxy, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	weekly, wErr := fetchBillingOnce(client, &acc, true)
+	monthly, mErr := fetchBillingOnce(client, &acc, false)
+	if wErr != nil && mErr != nil {
+		return nil, fmt.Errorf("用量查询失败（周: %v；月: %v）", wErr, mErr)
+	}
+	return xai.MergeBillingProbeResult(nil, weekly, monthly, wErr == nil, mErr == nil), nil
+}
+
+func fetchBillingOnce(client *http.Client, acc *Account, weekly bool) (*xai.BillingSummary, error) {
+	base := strings.TrimRight(accountBaseURL(acc), "/")
+	path := xai.BillingMonthlyPath
+	if weekly {
+		path = xai.BillingWeeklyPath
+	}
+	req, rerr := http.NewRequest(http.MethodGet, base+path, nil)
+	if rerr != nil {
+		return nil, rerr
+	}
+	applyGrokCLIHeaders(req, acc.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncStr(strings.TrimSpace(string(raw)), 200))
+	}
+	var payload xai.BillingPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("解析失败: %v", err)
+	}
+	return xai.BuildBillingSummary(payload.Config), nil
+}
+
 // VerifyCredential 凭证校验：拉一次 /models，成功即视为凭证可用（比对话省钱省时）。
 // 结果同样写回测试留痕。
 func (s *AccountService) VerifyCredential(ctx context.Context, id string, useProxy bool) (int, error) {

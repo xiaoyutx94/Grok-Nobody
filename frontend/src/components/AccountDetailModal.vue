@@ -9,6 +9,33 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', acc: any): void }>()
 const saving = ref(false)
 const errorMsg = ref('')
 const reveal = reactive<Record<string, boolean>>({})
+// 用量查询（sub2api 同款 billing 探测）
+const usageLoading = ref(false)
+const usage = ref<any | null>(null)
+const usageError = ref('')
+
+async function queryUsage() {
+  const acc = props.account
+  if (!acc?.id || !acc.access_token) {
+    usageError.value = '该账号无 OAuth 凭证，无法查询用量'
+    return
+  }
+  usageLoading.value = true
+  usageError.value = ''
+  usage.value = null
+  try {
+    usage.value = await grok.fetchAccountUsage(acc.id, true)
+  } catch (e: any) {
+    usageError.value = e?.response?.data?.error || e?.message || '用量查询失败'
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+function fmtPct(p: any): string {
+  if (p == null) return ''
+  return `${Number(p).toFixed(1)}%`
+}
 const form = reactive({
   email: '',
   password: '',
@@ -176,6 +203,45 @@ const updatedAt = computed(() => (props.account?.updated_at || '').replace('T', 
           代理（留空直连）
           <input class="input ctl mono" v-model="form.proxy" placeholder="socks5://user:pass@host:1080" />
         </label>
+
+        <!-- 用量查询（sub2api 同款 billing 探测：周 credits + 月额度） -->
+        <div class="usage-box">
+          <div class="usage-head">
+            <span class="usage-title">用量查询</span>
+            <button class="btn btn-ghost btn-xs" :disabled="usageLoading" @click="queryUsage">
+              {{ usageLoading ? '查询中…' : usage ? '重新查询' : '查询用量' }}
+            </button>
+          </div>
+          <div v-if="usageError" class="usage-err">{{ usageError }}</div>
+          <div v-else-if="usage" class="usage-body">
+            <div class="usage-row" v-if="usage.plan">
+              <span class="usage-k">套餐</span><b>{{ usage.plan }}</b>
+            </div>
+            <div class="usage-row" v-if="usage.period_type || usage.usage_percent != null">
+              <span class="usage-k">周期</span>
+              <b>{{ usage.period_type || '—' }}{{ usage.usage_percent != null ? ` · 已用 ${fmtPct(usage.usage_percent)}` : '' }}</b>
+            </div>
+            <div class="usage-row" v-if="usage.period_start || usage.period_end">
+              <span class="usage-k">窗口</span>
+              <span class="mono">{{ (usage.period_start || '—').slice(0, 16) }} ~ {{ (usage.period_end || '—').slice(0, 16) }}</span>
+            </div>
+            <div class="usage-row" v-if="usage.monthly_limit_cents || usage.used_cents">
+              <span class="usage-k">月度</span>
+              <span class="mono">已用 ${{ ((usage.used_cents || 0) / 100).toFixed(2) }} / ${{ ((usage.monthly_limit_cents || 0) / 100).toFixed(2) }}</span>
+            </div>
+            <div class="usage-prods" v-if="usage.product_usage?.length">
+              <div v-for="pu in usage.product_usage" :key="pu.product" class="usage-row">
+                <span class="usage-k">{{ pu.product }}</span>
+                <span v-if="pu.usage_percent != null">{{ fmtPct(pu.usage_percent) }}</span>
+              </div>
+            </div>
+            <div v-if="usage.used_percent != null" class="usage-row">
+              <span class="usage-k">已用</span><b>{{ fmtPct(usage.used_percent) }}</b>
+            </div>
+            <div v-if="usage.partial" class="usage-note">部分窗口查询失败（周/月任一不可用）</div>
+          </div>
+          <div v-else class="usage-note">查询账号在 cli-chat-proxy 的用量（周 credits 与月度额度）</div>
+        </div>
         <label class="field">
           Base URL（留空用官方）
           <input class="input ctl mono" v-model="form.base_url" placeholder="https://api.x.ai/v1" />
@@ -215,3 +281,47 @@ const updatedAt = computed(() => (props.account?.updated_at || '').replace('T', 
     </div>
   </div>
 </template>
+
+<style scoped>
+.usage-box {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(127, 127, 127, 0.25));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel, #fff) 60%, transparent);
+}
+.usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.usage-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+.usage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.usage-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.usage-k {
+  min-width: 44px;
+  color: var(--ink-3, #888);
+  font-size: 11px;
+}
+.usage-note {
+  font-size: 11px;
+  color: var(--ink-3, #888);
+}
+.usage-err {
+  font-size: 11px;
+  color: #d33;
+}
+</style>

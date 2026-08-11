@@ -576,7 +576,6 @@ onMounted(reload)
             <th class="col-state">状态</th>
             <th class="col-group">分组</th>
             <th class="col-test">上次测试</th>
-            <th class="col-proxy">代理</th>
             <th class="col-time">创建</th>
             <th class="col-act">操作</th>
           </tr>
@@ -632,11 +631,6 @@ onMounted(reload)
               <span v-else class="note">未测试</span>
             </td>
 
-            <td class="col-proxy">
-              <span v-if="a.proxy" class="mono note" :title="a.proxy">{{ shortProxy(a.proxy) }}</span>
-              <span v-else class="note">直连</span>
-            </td>
-
             <td class="col-time"><span class="note">{{ shortTime(a.created_at) }}</span></td>
 
             <td class="col-act">
@@ -649,7 +643,7 @@ onMounted(reload)
             </td>
           </tr>
           <tr v-if="!pageItems.length">
-            <td colspan="10" class="empty-cell">
+            <td colspan="9" class="empty-cell">
               <div v-if="loading" class="note">加载中…</div>
               <div v-else>
                 <div class="empty-title">{{ accounts.length ? '没有匹配的账号' : '账号库还是空的' }}</div>
