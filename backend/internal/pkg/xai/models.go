@@ -1,12 +1,16 @@
 package xai
 
-// Model describes an xAI model in OpenAI-compatible /models shape.
+// 内置官方模型清单（跟随 sub2api：从 x.ai 官方维护的已知模型集）。
+// 用途：网关 /v1/models 在上游账号目录之外补充官方模型——免费 OAuth 账号
+// 上游只返回 grok-4.5（按订阅层级过滤），但官方发布过且用户可能用付费账号
+// 调用的模型在此完整列出（sub2api 同款行为：模型列表 ≠ 当前账号全部可用，
+// 无权限的模型调用会由上游 402 明确报错）。
+
 type Model struct {
 	ID          string `json:"id"`
 	Object      string `json:"object"`
-	Created     int64  `json:"created,omitempty"`
-	OwnedBy     string `json:"owned_by"`
-	DisplayName string `json:"display_name,omitempty"`
+	OwnedBy     string `json:"owned_by,omitempty"`
+	DisplayName string `json:"name,omitempty"`
 }
 
 var defaultModels = []Model{
@@ -25,34 +29,19 @@ var defaultModels = []Model{
 	{ID: "grok-imagine-video-1.5", Object: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Video 1.5"},
 }
 
+// DefaultModels 返回内置官方清单副本。
 func DefaultModels() []Model {
 	out := make([]Model, len(defaultModels))
 	copy(out, defaultModels)
 	return out
 }
 
+// DefaultModelIDs 返回内置清单模型 ID 列表。
 func DefaultModelIDs() []string {
 	models := DefaultModels()
 	ids := make([]string, 0, len(models))
-	for _, model := range models {
-		ids = append(ids, model.ID)
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
 	return ids
-}
-
-func DefaultModelMapping() map[string]string {
-	mapping := make(map[string]string, len(defaultModels)+5)
-	for _, model := range defaultModels {
-		mapping[model.ID] = model.ID
-	}
-	mapping["grok"] = "grok-4.5"
-	mapping["grok-latest"] = "grok-4.5"
-	mapping["grok-4.5-latest"] = "grok-4.5"
-	mapping["grok-build"] = "grok-build-0.1"
-	mapping["grok-build-latest"] = "grok-4.5"
-	mapping["grok-composer"] = "grok-composer-2.5-fast"
-	mapping["composer-2.5"] = "grok-composer-2.5-fast"
-	mapping["grok-4.20-reasoning"] = "grok-4.20-0309-reasoning"
-	mapping["grok-4.20-non-reasoning"] = "grok-4.20-0309-non-reasoning"
-	return mapping
 }

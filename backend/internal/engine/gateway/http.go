@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/umbraforge/desktop/internal/pkg/xai"
 )
 
 const maxBodyBytes = 64 << 20 // 64MB
@@ -202,14 +203,17 @@ func flushCopy(c *gin.Context, r io.Reader) {
 	}
 }
 
-// handleModels 动态返回上游真实模型目录（官方权威，非硬编码）：
-// 用分组账号 token 调 cli-chat-proxy /v1/models，轮询最多 3 个账号合并去重
-// （免费/付费账号目录可能不同）。全部失败才回退官方默认模型 grok-4.5。
+// handleModels 返回模型列表 = 上游真实目录 ∪ 内置官方清单（sub2api 同款行为）：
+// 1. 用分组账号 token 调 cli-chat-proxy /v1/models，轮询最多 3 个账号合并去重
+//    （免费/付费账号目录可能不同）——这是账号真实可用的权威数据；
+// 2. 用内置官方清单（xai.DefaultModels）补齐官方发布过的模型——免费账号
+//    上游只返回 grok-4.5，付费账号可用的其他模型在此完整列出。
+// 上游全部失败也不影响清单（模型列表 ≠ 当前账号全部可用，无权限调用由上游 402 明确报错）。
 func (g *GatewayService) handleModels() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		seen := map[string]bool{}
 		var models []map[string]any
-		for i := 0; i < 3 && len(seen) < 5; i++ {
+		for i := 0; i < 3 && len(seen) < 8; i++ {
 			_, svc, entry, err := g.resolveTarget(c)
 			if err != nil {
 				break
@@ -238,6 +242,16 @@ func (g *GatewayService) handleModels() gin.HandlerFunc {
 					models = append(models, m)
 				}
 			}
+		}
+		// 内置官方清单补齐（含 DisplayName）
+		for _, m := range xai.DefaultModels() {
+			if seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			models = append(models, map[string]any{
+				"id": m.ID, "object": m.Object, "owned_by": m.OwnedBy, "name": m.DisplayName,
+			})
 		}
 		if len(models) == 0 {
 			// 兜底：仅官方默认模型（不猜测其他模型名）

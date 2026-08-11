@@ -241,7 +241,7 @@ func TestGatewayNoAccountInGroup(t *testing.T) {
 }
 
 func TestGatewayModelsEndpoint(t *testing.T) {
-	// models 现在动态转发上游（官方权威目录）
+	// models = 上游动态目录 ∪ 内置官方清单
 	upstream := func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/v1/models", r.URL.Path)
 		require.NotEmpty(t, r.Header.Get("x-grok-client-version"), "models 请求应带 grok CLI 身份头")
@@ -257,6 +257,10 @@ func TestGatewayModelsEndpoint(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "grok-4.5")
 	require.Contains(t, rec.Body.String(), "grok-4.5-thinking")
 	require.Contains(t, rec.Body.String(), "context_window", "应透传官方模型元数据（含 reasoning_efforts）")
+	// 内置官方清单补齐：上游没有的模型也应列出（sub2api 同款行为）
+	require.Contains(t, rec.Body.String(), "grok-4.3", "内置官方清单应补齐")
+	require.Contains(t, rec.Body.String(), "grok-imagine-video-1.5", "内置官方清单应补齐")
+	require.Contains(t, rec.Body.String(), "Grok Build 0.1", "清单 DisplayName 应透传")
 }
 
 // ---------- 代理出口 ----------
