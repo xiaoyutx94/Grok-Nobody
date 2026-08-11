@@ -42,6 +42,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// 单实例锁：双开会互相覆盖 settings.json（账号/密钥丢失），
+	// 且第二实例退出会触发 macOS 系统崩溃（CoreSpotlight atexit in fork child）。
+	// 冲突时用 _exit 退出（绕过 atexit 清理链），不弹崩溃报告。
+	if release, lerr := store.AcquireLock(dataDir); lerr != nil {
+		log.Printf("⚠ 单实例冲突: %v（程序已在运行，本实例退出）", lerr)
+		notifyAlreadyRunning()
+		exitNoAtexit(1)
+	} else {
+		defer release()
+	}
 	projectRoot, err := resolveProjectRoot(*root, dataDir)
 	if err != nil {
 		log.Fatal(err)
